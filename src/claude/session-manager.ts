@@ -48,6 +48,8 @@ const pendingCustomInputs = new Map<string, { requestId: string }>();
 
 class SessionManager {
   private sessions = new Map<string, ActiveSession>();
+  private messageQueue = new Map<string, { channel: TextChannel; prompt: string }>();
+  private pendingQueuePrompts = new Map<string, { channel: TextChannel; prompt: string }>();
 
   async sendMessage(
     channel: TextChannel,
@@ -356,6 +358,14 @@ class SessionManager {
     } finally {
       clearInterval(heartbeatInterval);
       this.sessions.delete(channelId);
+
+      // Process next queued message if any
+      const next = this.messageQueue.get(channelId);
+      if (next) {
+        this.messageQueue.delete(channelId);
+        channel.send("📨 대기 중이던 메시지를 처리합니다...").catch(() => {});
+        this.sendMessage(next.channel, next.prompt);
+      }
     }
   }
 
@@ -422,6 +432,28 @@ class SessionManager {
 
   hasPendingCustomInput(channelId: string): boolean {
     return pendingCustomInputs.has(channelId);
+  }
+
+  // --- Message queue ---
+
+  setPendingQueue(channelId: string, channel: TextChannel, prompt: string): void {
+    this.pendingQueuePrompts.set(channelId, { channel, prompt });
+  }
+
+  confirmQueue(channelId: string): boolean {
+    const pending = this.pendingQueuePrompts.get(channelId);
+    if (!pending) return false;
+    this.pendingQueuePrompts.delete(channelId);
+    this.messageQueue.set(channelId, pending);
+    return true;
+  }
+
+  cancelQueue(channelId: string): void {
+    this.pendingQueuePrompts.delete(channelId);
+  }
+
+  hasQueue(channelId: string): boolean {
+    return this.messageQueue.has(channelId) || this.pendingQueuePrompts.has(channelId);
   }
 }
 

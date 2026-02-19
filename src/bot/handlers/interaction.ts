@@ -54,6 +54,35 @@ export async function handleButtonInteraction(
     return;
   }
 
+  // Handle queue confirmation
+  if (action === "queue-yes") {
+    const channelId = requestId;
+    const confirmed = sessionManager.confirmQueue(channelId);
+    if (!confirmed) {
+      await interaction.update({
+        content: "⏳ 큐 요청이 만료되었습니다.",
+        components: [],
+      });
+      return;
+    }
+    await interaction.update({
+      content: "📨 메시지가 큐에 추가되었습니다. 이전 작업 완료 후 자동으로 처리됩니다.",
+      components: [],
+    });
+    return;
+  }
+
+  // Handle queue cancellation
+  if (action === "queue-no") {
+    const channelId = requestId;
+    sessionManager.cancelQueue(channelId);
+    await interaction.update({
+      content: "취소되었습니다.",
+      components: [],
+    });
+    return;
+  }
+
   // Handle session resume button
   if (action === "session-resume") {
     const sessionId = requestId;

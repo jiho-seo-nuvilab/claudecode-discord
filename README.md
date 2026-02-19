@@ -12,7 +12,7 @@ Run independent Claude Code sessions per channel, with tool use approval/denial 
 - 🔀 Independent sessions per channel (project directory mapping)
 - ✅ Tool use approve/deny via Discord button UI
 - ❓ Interactive question UI (selectable options + custom text input)
-- ⏹️ Stop button for instant cancellation during progress
+- ⏹️ Stop button for instant cancellation during progress, message queue for sequential tasks
 - 📎 File attachments support (images, documents, code files)
 - 🔄 Session resume/delete/new (persist across bot restarts, last conversation preview)
 - ⏱️ Real-time progress display (tool usage, elapsed time)
@@ -109,7 +109,7 @@ Attach images, documents, or code files and Claude can read and analyze them.
 ### In-Progress Controls
 
 - **⏹️ Stop** button on progress messages for instant cancellation
-- Sending a new message while busy shows "previous task in progress" notice
+- Sending a new message while busy offers **message queue** — auto-processes after current task completes
 - `/stop` slash command also available
 
 ## Architecture

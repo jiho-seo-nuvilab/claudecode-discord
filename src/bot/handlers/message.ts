@@ -1,4 +1,4 @@
-import { Message, TextChannel, Attachment } from "discord.js";
+import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { getProject } from "../../db/database.js";
 import { isAllowedUser, checkRateLimit } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
@@ -104,9 +104,32 @@ export async function handleMessage(message: Message): Promise<void> {
 
   const channel = message.channel as TextChannel;
 
-  // Reject if session is already active (processing a previous message)
+  // If session is active, offer to queue the message
   if (sessionManager.isActive(message.channelId)) {
-    await message.reply("⏳ 이전 작업이 진행 중입니다. 완료 후 다시 시도해주세요.");
+    if (sessionManager.hasQueue(message.channelId)) {
+      await message.reply("⏳ 이미 대기 중인 메시지가 있습니다. 현재 작업 완료를 기다려주세요.");
+      return;
+    }
+
+    sessionManager.setPendingQueue(message.channelId, channel, prompt);
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`queue-yes:${message.channelId}`)
+        .setLabel("큐에 추가")
+        .setStyle(ButtonStyle.Success)
+        .setEmoji("✅"),
+      new ButtonBuilder()
+        .setCustomId(`queue-no:${message.channelId}`)
+        .setLabel("취소")
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji("❌"),
+    );
+
+    await message.reply({
+      content: "⏳ 이전 작업이 진행 중입니다. 완료 후 자동으로 처리할까요?",
+      components: [row],
+    });
     return;
   }
 
