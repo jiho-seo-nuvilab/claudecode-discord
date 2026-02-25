@@ -35,6 +35,15 @@ class ClaudeBotTray : Form
 
         trayIcon = new NotifyIcon();
         trayIcon.Visible = true;
+        // Left-click also shows menu
+        trayIcon.MouseClick += (s, e) => {
+            if (e.Button == MouseButtons.Left)
+            {
+                var mi = typeof(NotifyIcon).GetMethod("ShowContextMenu",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (mi != null) mi.Invoke(trayIcon, null);
+            }
+        };
         UpdateStatus();
         BuildMenu();
 
@@ -52,12 +61,20 @@ class ClaudeBotTray : Form
         // Initial update check
         CheckForUpdates();
 
-        // .env 없으면 설정 창 열기
         if (!File.Exists(envPath))
         {
+            // .env 없으면 설정 창 열기
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
             t.Interval = 500;
             t.Tick += (s, e) => { t.Stop(); OpenSettings(null, null); };
+            t.Start();
+        }
+        else if (!IsRunning())
+        {
+            // .env 있고 봇이 안 돌고 있으면 자동 시작
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            t.Interval = 1000;
+            t.Tick += (s, e) => { t.Stop(); StartBot(null, null); };
             t.Start();
         }
     }
@@ -213,7 +230,7 @@ class ClaudeBotTray : Form
         menu.Items.Add(new ToolStripSeparator());
 
         // Auto-start toggle
-        var autoStartItem = new ToolStripMenuItem("Start at Login");
+        var autoStartItem = new ToolStripMenuItem("Auto Run on Startup");
         autoStartItem.Checked = IsAutoStartEnabled();
         autoStartItem.Click += ToggleAutoStart;
         menu.Items.Add(autoStartItem);
@@ -240,10 +257,32 @@ class ClaudeBotTray : Form
         string cmd = "cmd /c cd /d " + botDir + " & echo running> .bot.lock & node dist/index.js & del .bot.lock";
         File.WriteAllText(vbs, "Set ws = CreateObject(\"WScript.Shell\")\nws.Run \"" + cmd.Replace("\"", "\"\"") + "\", 0, False\n");
         Process.Start("wscript", "\"" + vbs + "\"");
-        Thread.Sleep(3000);
-        try { File.Delete(vbs); } catch { }
-        UpdateStatus();
-        BuildMenu();
+        // Wait for bot to start, then show notification
+        System.Windows.Forms.Timer waitTimer = new System.Windows.Forms.Timer();
+        waitTimer.Interval = 1000;
+        int waitCount = 0;
+        waitTimer.Tick += (s2, e2) => {
+            waitCount++;
+            if (IsRunning())
+            {
+                waitTimer.Stop();
+                try { File.Delete(vbs); } catch { }
+                UpdateStatus();
+                BuildMenu();
+                trayIcon.BalloonTipTitle = "Claude Bot Started";
+                trayIcon.BalloonTipText = "Bot is running. Right-click tray icon to manage.";
+                trayIcon.BalloonTipIcon = ToolTipIcon.Info;
+                trayIcon.ShowBalloonTip(3000);
+            }
+            else if (waitCount > 10)
+            {
+                waitTimer.Stop();
+                try { File.Delete(vbs); } catch { }
+                UpdateStatus();
+                BuildMenu();
+            }
+        };
+        waitTimer.Start();
     }
 
     private void KillBot()
@@ -301,8 +340,8 @@ class ClaudeBotTray : Form
         }
         else
         {
-            string batPath = Path.Combine(botDir, "win-start.bat");
-            RunCmd("schtasks /create /tn \"" + taskName + "\" /tr \"\\\"" + batPath + "\\\" --fg\" /sc onlogon /rl highest /f", true);
+            string exePath = Application.ExecutablePath;
+            RunCmd("schtasks /create /tn \"" + taskName + "\" /tr \"\\\"" + exePath + "\\\"\" /sc onlogon /rl highest /f", true);
         }
         BuildMenu();
     }
