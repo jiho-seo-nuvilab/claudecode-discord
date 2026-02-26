@@ -176,9 +176,10 @@ else
 fi
 
 # Register menu bar app autostart (launches menu bar on login → menu bar manages bot lifecycle)
+# Only write plist file — do NOT launchctl load here (nohup already started it above)
+# The plist with RunAtLoad=true will auto-start on next login/reboot
 if [ -f "$MENUBAR" ]; then
     mkdir -p "$HOME/Library/LaunchAgents"
-    launchctl unload "$MENUBAR_PLIST_DST" 2>/dev/null
     cat > "$MENUBAR_PLIST_DST" <<MBEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -201,7 +202,6 @@ if [ -f "$MENUBAR" ]; then
 </dict>
 </plist>
 MBEOF
-    launchctl load "$MENUBAR_PLIST_DST"
     echo "🔔 Menu bar autostart registered"
 fi
 
