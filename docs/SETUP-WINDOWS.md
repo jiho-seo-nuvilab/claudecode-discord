@@ -174,6 +174,8 @@ npm run build
    - This is your `ALLOWED_USER_IDS`
    - Multiple users: comma-separated: `123456789,987654321`
 
+   ![Copy User ID](copy-user-id-en.png)
+
 ---
 
 ## 5. Configure Settings

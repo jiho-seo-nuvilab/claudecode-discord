@@ -147,6 +147,8 @@ npm run build   # Check for type errors
    - This is your `ALLOWED_USER_IDS`
    - Multiple users: comma-separated: `123456789,987654321`
 
+   ![Copy User ID](docs/copy-user-id-en.png)
+
 ---
 
 ## 5. Environment Variables

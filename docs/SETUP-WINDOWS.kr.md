@@ -174,6 +174,8 @@ npm run build
    - 이 값이 `ALLOWED_USER_IDS`
    - 여러 명이면 쉼표로 구분: `123456789,987654321`
 
+   ![사용자 ID 복사](copy-user-id-kr.png)
+
 ---
 
 ## 5. 설정
