@@ -128,6 +128,42 @@ if exist .env (
 )
 echo.
 
+:: --- 5. Build ---
+echo [5/6] Building project...
+call npm run build
+if %errorlevel% neq 0 (
+    echo   X Build failed.
+    pause
+    exit /b 1
+)
+echo   OK Done
+echo.
+
+:: --- 6. Desktop shortcut ---
+echo [6/6] Creating desktop shortcut...
+set "SCRIPT_DIR=%~dp0"
+set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "SHORTCUT_VBS=%TEMP%\create-shortcut.vbs"
+set "DESKTOP=%USERPROFILE%\Desktop"
+
+echo Set oWS = WScript.CreateObject("WScript.Shell") > "%SHORTCUT_VBS%"
+echo sLinkFile = "%DESKTOP%\Claude Discord Bot.lnk" >> "%SHORTCUT_VBS%"
+echo Set oLink = oWS.CreateShortcut(sLinkFile) >> "%SHORTCUT_VBS%"
+echo oLink.TargetPath = "%SCRIPT_DIR%\win-start.bat" >> "%SHORTCUT_VBS%"
+echo oLink.WorkingDirectory = "%SCRIPT_DIR%" >> "%SHORTCUT_VBS%"
+echo oLink.Description = "Claude Discord Bot" >> "%SHORTCUT_VBS%"
+echo oLink.WindowStyle = 7 >> "%SHORTCUT_VBS%"
+echo oLink.Save >> "%SHORTCUT_VBS%"
+cscript //nologo "%SHORTCUT_VBS%" >nul 2>&1
+del "%SHORTCUT_VBS%" >nul 2>&1
+
+if exist "%DESKTOP%\Claude Discord Bot.lnk" (
+    echo   OK Desktop shortcut created
+) else (
+    echo   ! Could not create desktop shortcut
+)
+echo.
+
 :: --- Done ---
 echo ===================================
 echo  Installation complete!
@@ -136,12 +172,11 @@ echo.
 if %NEED_LOGIN%==1 (
     echo Next steps:
     echo   1. Run 'claude' to login to Claude Code
-    echo   2. Edit .env with your Discord bot token and settings
-    echo   3. Run 'npm run dev' to start the bot
+    echo   2. Configure settings from the tray icon
 ) else (
-    echo Next steps:
-    echo   1. Edit .env with your Discord bot token and settings
-    echo   2. Run 'npm run dev' to start the bot
+    echo Starting Claude Discord Bot...
+    echo.
+    start "" "%SCRIPT_DIR%\win-start.bat"
 )
 echo.
 echo See SETUP.md for detailed instructions.
