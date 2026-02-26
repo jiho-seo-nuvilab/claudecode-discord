@@ -585,5 +585,32 @@ def main():
     icon.run()
 
 
+def ensure_single_instance():
+    """Ensure only one tray app instance is running (PID file based)."""
+    pid_file = os.path.join(BOT_DIR, ".tray.pid")
+    my_pid = os.getpid()
+
+    # Check if existing instance is alive
+    if os.path.exists(pid_file):
+        try:
+            old_pid = int(open(pid_file).read().strip())
+            if old_pid != my_pid:
+                os.kill(old_pid, 0)  # Check if process exists
+                # Process exists — kill it
+                os.kill(old_pid, 9)
+                time.sleep(0.5)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # Process already dead or invalid PID
+
+    # Write our PID
+    with open(pid_file, "w") as f:
+        f.write(str(my_pid))
+
+    # Cleanup PID file on exit
+    import atexit
+    atexit.register(lambda: os.remove(pid_file) if os.path.exists(pid_file) else None)
+
+
 if __name__ == "__main__":
+    ensure_single_instance()
     main()
