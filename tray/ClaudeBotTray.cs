@@ -82,9 +82,9 @@ class ClaudeBotTray : Form
             if (args[i] == "--show") showPanel = true;
         }
 
-        if (!File.Exists(envPath))
+        if (!IsEnvConfigured())
         {
-            // .env 없으면 설정 창 열기
+            // .env 없거나 설정 안 됐으면 설정 창 열기
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
             t.Interval = 500;
             t.Tick += (s, e) => { t.Stop(); OpenSettings(null, null); };
@@ -282,10 +282,21 @@ class ClaudeBotTray : Form
         return bmp;
     }
 
+    private bool IsEnvConfigured()
+    {
+        if (!File.Exists(envPath)) return false;
+        var env = LoadEnv();
+        string token = ""; env.TryGetValue("DISCORD_BOT_TOKEN", out token);
+        if (token == null || token == "" || token == "your_bot_token_here") return false;
+        string guild = ""; env.TryGetValue("DISCORD_GUILD_ID", out guild);
+        if (guild == null || guild == "" || guild == "your_server_id_here") return false;
+        return true;
+    }
+
     private void UpdateStatus()
     {
         bool running = IsRunning();
-        bool hasEnv = File.Exists(envPath);
+        bool hasEnv = IsEnvConfigured();
 
         if (!hasEnv)
         {
@@ -307,7 +318,7 @@ class ClaudeBotTray : Form
     private void BuildMenu()
     {
         bool running = IsRunning();
-        bool hasEnv = File.Exists(envPath);
+        bool hasEnv = IsEnvConfigured();
 
         var menu = new ContextMenuStrip();
 
@@ -531,7 +542,20 @@ class ClaudeBotTray : Form
             new string[] { "SHOW_COST", L("Show Cost (true/false)", "비용 표시 (true/false)") },
         };
 
-        string[] defaults = new string[] { "", "", "", botDir, "10", "true" };
+        string[] defaults = new string[] { "", "", "", "", "10", "true" };
+        string[] placeholders = new string[] {
+            L("Paste your bot token here", "봇 토큰을 여기에 붙여넣으세요"),
+            L("Right-click server > Copy Server ID", "서버 우클릭 > 서버 ID 복사"),
+            L("e.g. 123456789,987654321", "예: 123456789,987654321"),
+            L("e.g. C:\\Users\\you\\projects", "예: C:\\Users\\you\\projects"),
+            "10",
+            "true"
+        };
+        // Placeholder values from .env.example that should be treated as empty
+        var exampleValues = new System.Collections.Generic.HashSet<string>() {
+            "your_bot_token_here", "your_server_id_here", "your_user_id_here",
+            "/Users/yourname/projects", "/Users/you/projects", "C:\\Users\\yourname\\projects"
+        };
 
         var textBoxes = new TextBox[fields.Length];
         int y = 35;
@@ -547,7 +571,16 @@ class ClaudeBotTray : Form
                 var tb = new TextBox() { Left = 15, Top = y, Width = 360 };
                 string val = "";
                 env.TryGetValue(fields[i][0], out val);
-                tb.Text = (val != null && val != "") ? val : defaults[i];
+                if (val != null && exampleValues.Contains(val)) val = "";
+                if (val != null && val != "")
+                    tb.Text = val;
+                else
+                {
+                    string hint = placeholders[i];
+                    tb.HandleCreated += (s2, e2) => {
+                        SendMessage(((TextBox)s2).Handle, EM_SETCUEBANNER, IntPtr.Zero, hint);
+                    };
+                }
                 form.Controls.Add(tb);
                 textBoxes[i] = tb;
 
@@ -572,6 +605,7 @@ class ClaudeBotTray : Form
                 var tb = new TextBox() { Left = 15, Top = y, Width = 450 };
                 string val = "";
                 env.TryGetValue(fields[i][0], out val);
+                if (val != null && exampleValues.Contains(val)) val = "";
 
                 if (fields[i][0] == "DISCORD_BOT_TOKEN" && val != null && val.Length > 10)
                 {
@@ -580,9 +614,20 @@ class ClaudeBotTray : Form
                             "****" + val.Substring(val.Length - 6) + L(" (enter full token to change)", " (변경하려면 전체 토큰 입력)"));
                     };
                 }
+                else if (val != null && val != "")
+                {
+                    tb.Text = val;
+                }
                 else
                 {
-                    tb.Text = (val != null && val != "") ? val : defaults[i];
+                    tb.Text = defaults[i];
+                    if (defaults[i] == "")
+                    {
+                        string hint = placeholders[i];
+                        tb.HandleCreated += (s2, e2) => {
+                            SendMessage(((TextBox)s2).Handle, EM_SETCUEBANNER, IntPtr.Zero, hint);
+                        };
+                    }
                 }
 
                 form.Controls.Add(tb);
@@ -711,7 +756,7 @@ class ClaudeBotTray : Form
         controlPanel.Controls.Clear();
 
         bool running = IsRunning();
-        bool hasEnv = File.Exists(envPath);
+        bool hasEnv = IsEnvConfigured();
 
         int panelWidth = controlPanel.Width;
         int btnWidth = panelWidth - 60;

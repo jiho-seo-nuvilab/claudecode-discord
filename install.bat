@@ -118,13 +118,7 @@ if exist .env (
     echo   .env already exists
     echo   OK
 ) else (
-    if exist .env.example (
-        copy .env.example .env >nul
-        echo   Created .env from .env.example
-        echo   ! Edit .env and fill in your values before running!
-    ) else (
-        echo   ! .env.example not found, skipping
-    )
+    echo   .env not found - tray app will open Settings dialog on first launch
 )
 echo.
 
