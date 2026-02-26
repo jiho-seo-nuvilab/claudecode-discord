@@ -22,14 +22,19 @@ const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB (Discord free tier limit)
 async function downloadAttachment(
   attachment: Attachment,
   projectPath: string,
-): Promise<{ filePath: string; isImage: boolean } | null> {
+): Promise<{ filePath: string; isImage: boolean } | { skipped: string } | null> {
   const ext = path.extname(attachment.name ?? "").toLowerCase();
 
   // Block dangerous executables
-  if (BLOCKED_EXTENSIONS.has(ext)) return null;
+  if (BLOCKED_EXTENSIONS.has(ext)) {
+    return { skipped: L(`Blocked: \`${attachment.name}\` (dangerous file type)`, `차단됨: \`${attachment.name}\` (위험한 파일 형식)`) };
+  }
 
   // Skip files that are too large
-  if (attachment.size > MAX_FILE_SIZE) return null;
+  if (attachment.size > MAX_FILE_SIZE) {
+    const sizeMB = (attachment.size / 1024 / 1024).toFixed(1);
+    return { skipped: L(`Skipped: \`${attachment.name}\` (${sizeMB}MB exceeds 25MB limit)`, `건너뜀: \`${attachment.name}\` (${sizeMB}MB, 25MB 제한 초과)`) };
+  }
 
   const uploadDir = path.join(projectPath, ".claude-uploads");
   if (!fs.existsSync(uploadDir)) {
@@ -39,11 +44,18 @@ async function downloadAttachment(
   const fileName = `${Date.now()}-${attachment.name}`;
   const filePath = path.join(uploadDir, fileName);
 
-  const response = await fetch(attachment.url);
-  if (!response.ok || !response.body) return null;
+  try {
+    const response = await fetch(attachment.url);
+    if (!response.ok || !response.body) {
+      return { skipped: L(`Failed to download: \`${attachment.name}\``, `다운로드 실패: \`${attachment.name}\``) };
+    }
 
-  const fileStream = fs.createWriteStream(filePath);
-  await pipeline(Readable.fromWeb(response.body as any), fileStream);
+    const fileStream = fs.createWriteStream(filePath);
+    await pipeline(Readable.fromWeb(response.body as any), fileStream);
+  } catch (e) {
+    console.warn(`[download] Failed to download attachment ${attachment.name}:`, e instanceof Error ? e.message : e);
+    return { skipped: L(`Failed to download: \`${attachment.name}\``, `다운로드 실패: \`${attachment.name}\``) };
+  }
 
   return { filePath, isImage: IMAGE_EXTENSIONS.has(ext) };
 }
@@ -83,15 +95,24 @@ export async function handleMessage(message: Message): Promise<void> {
   // Download attachments (images, documents, code files, etc.)
   const imagePaths: string[] = [];
   const filePaths: string[] = [];
+  const skippedMessages: string[] = [];
 
   for (const [, attachment] of message.attachments) {
     const result = await downloadAttachment(attachment, project.project_path);
     if (!result) continue;
+    if ("skipped" in result) {
+      skippedMessages.push(result.skipped);
+      continue;
+    }
     if (result.isImage) {
       imagePaths.push(result.filePath);
     } else {
       filePaths.push(result.filePath);
     }
+  }
+
+  if (skippedMessages.length > 0) {
+    await message.reply(skippedMessages.join("\n"));
   }
 
   if (imagePaths.length > 0) {

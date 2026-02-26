@@ -4,9 +4,7 @@
 
 # Claude Code Discord Controller
 
-Discord에서 여러 프로젝트의 Claude Code 세션을 원격 관리하는 봇입니다. (데스크톱/웹/모바일)
-
-채널별로 독립적인 Claude Code 세션을 실행하고, tool use 승인/거절을 Discord 버튼으로 제어할 수 있습니다.
+폰에서 Claude Code를 제어하세요 — Discord를 통한 멀티머신 에이전트 허브.
 
 ## 왜 이 봇인가? — 공식 Remote Control과의 차이
 

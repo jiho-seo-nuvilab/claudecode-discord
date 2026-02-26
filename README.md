@@ -4,9 +4,7 @@
 
 # Claude Code Discord Controller
 
-A Discord bot that manages multiple Claude Code sessions remotely via Discord (desktop, web, and mobile).
-
-Run independent Claude Code sessions per channel, with tool use approval/denial via Discord buttons.
+Control Claude Code from your phone — a multi-machine agent hub via Discord.
 
 > **[Korean documentation (한국어)](docs/README.kr.md)**
 

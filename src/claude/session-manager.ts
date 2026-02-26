@@ -378,8 +378,10 @@ class SessionManager {
           const message =
             parsed?.error?.message ?? parsed?.message ?? "Unknown error";
           errMsg = `API Error ${statusCode}: ${message}. Please try again later.`;
-        } catch {
-          // JSON parse failed, use raw message
+        } catch (parseErr) {
+          console.warn(`[error-parse] Failed to parse API error JSON for ${channelId}:`, parseErr instanceof Error ? parseErr.message : parseErr);
+          // Fall back to extracting just the status code
+          errMsg = `API Error ${jsonMatch[1]}. Please try again later.`;
         }
       } else if (rawMsg.includes("process exited with code")) {
         errMsg = `${rawMsg}. The server may be temporarily unavailable — please try again later.`;
