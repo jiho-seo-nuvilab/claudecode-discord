@@ -146,8 +146,8 @@ claudecode-discord/
 | `/last` | 현재 세션의 마지막 Claude 응답 전체 확인 | |
 | `/clear-sessions` | 해당 프로젝트의 모든 세션 일괄 삭제 | |
 
-`/register`의 경로는 `.env`에 설정한 `BASE_PROJECT_DIR` 기준으로 해석됩니다.
-예: `BASE_PROJECT_DIR=/Users/you/projects`이면 `/register my-project` → `/Users/you/projects/my-project`. 절대 경로도 가능: `/register path:/Users/you/other/project`.
+`/register` 명령어는 `BASE_PROJECT_DIR` 하위 폴더를 **자동완성 드롭다운**으로 표시합니다 — 타이핑하면 필터링되어 선택할 수 있습니다.
+첫 번째 옵션 `.`은 베이스 디렉토리 자체를 등록합니다. 직접 경로를 입력해도 되며, 절대 경로도 사용 가능합니다.
 
 등록된 채널에 **일반 메시지**를 보내면 Claude가 응답합니다.
 이미지, 문서, 코드 파일을 첨부하면 Claude가 읽고 분석할 수 있습니다.

@@ -66,6 +66,14 @@ export async function startBot(): Promise<Client> {
   // Handle interactions (slash commands + buttons)
   client.on("interactionCreate", async (interaction: Interaction) => {
     try {
+      if (interaction.isAutocomplete()) {
+        const command = commandMap.get(interaction.commandName);
+        if (command && "autocomplete" in command) {
+          await (command as any).autocomplete(interaction);
+        }
+        return;
+      }
+
       if (interaction.isChatInputCommand()) {
         // Auth check
         if (!isAllowedUser(interaction.user.id)) {

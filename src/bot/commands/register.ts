@@ -1,8 +1,10 @@
 import {
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from "discord.js";
+import fs from "node:fs";
 import path from "node:path";
 import { registerProject, getProject } from "../../db/database.js";
 import { validateProjectPath } from "../../security/guard.js";
@@ -15,8 +17,9 @@ export const data = new SlashCommandBuilder()
   .addStringOption((opt) =>
     opt
       .setName("path")
-      .setDescription("Project folder name (under BASE_PROJECT_DIR)")
-      .setRequired(true),
+      .setDescription(`Project folder name (${getConfig().BASE_PROJECT_DIR})`)
+      .setRequired(true)
+      .setAutocomplete(true),
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
@@ -63,4 +66,32 @@ export async function execute(
       },
     ],
   });
+}
+
+export async function autocomplete(
+  interaction: AutocompleteInteraction,
+): Promise<void> {
+  const focused = interaction.options.getFocused();
+  const config = getConfig();
+  const baseDir = config.BASE_PROJECT_DIR;
+
+  try {
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    const dirs = entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => e.name)
+      .filter((name) => name.toLowerCase().includes(focused.toLowerCase()))
+      .slice(0, 24); // Discord max 25, reserve 1 for base dir
+
+    const choices: { name: string; value: string }[] = [];
+    // Add base directory itself as first option
+    if (!focused || ".".includes(focused.toLowerCase()) || baseDir.toLowerCase().includes(focused.toLowerCase())) {
+      choices.push({ name: `. (${baseDir})`, value: baseDir });
+    }
+    choices.push(...dirs.map((name) => ({ name, value: name })));
+
+    await interaction.respond(choices.slice(0, 25));
+  } catch {
+    await interaction.respond([]);
+  }
 }
