@@ -152,6 +152,9 @@ if [ "$1" = "--fg" ]; then
     if [ ! -d "dist" ]; then
         echo "[claude-bot] No build files found, building..."
         npm run build
+    elif find src -name "*.ts" -newer dist/index.js 2>/dev/null | grep -q .; then
+        echo "[claude-bot] Source changed, rebuilding..."
+        npm run build
     fi
 
     echo "[claude-bot] Starting bot (foreground)..."
