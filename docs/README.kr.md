@@ -117,7 +117,7 @@ claudecode-discord/
 │   ├── index.ts                # 엔트리포인트
 │   ├── bot/
 │   │   ├── client.ts           # Discord 봇 초기화 & 이벤트
-│   │   ├── commands/           # 슬래시 명령어 (9개)
+│   │   ├── commands/           # 슬래시 명령어 (10개)
 │   │   └── handlers/           # 메시지 & 인터랙션 핸들러
 │   ├── claude/
 │   │   ├── session-manager.ts  # 세션 생명주기 관리

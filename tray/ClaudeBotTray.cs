@@ -1541,8 +1541,10 @@ class ClaudeBotTray : Form
         bool success = false;
         try
         {
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             string credPath = Path.Combine(home, ".claude", ".credentials.json");
+            try { File.AppendAllText(Path.Combine(botDir, "usage-debug.log"), DateTime.Now + ": home=" + home + " credPath=" + credPath + " exists=" + File.Exists(credPath) + "\n"); } catch { }
             if (!File.Exists(credPath)) { if (openPageOnFail) Process.Start("https://claude.ai/settings/usage"); return; }
 
             string credJson = File.ReadAllText(credPath);
@@ -1575,8 +1577,9 @@ class ClaudeBotTray : Form
                     RebuildControlPanel();
             }
         }
-        catch
+        catch (Exception ex)
         {
+            try { File.AppendAllText(Path.Combine(botDir, "usage-error.log"), DateTime.Now + ": " + ex.Message + "\n"); } catch { }
             if (openPageOnFail) Process.Start("https://claude.ai/settings/usage");
         }
     }

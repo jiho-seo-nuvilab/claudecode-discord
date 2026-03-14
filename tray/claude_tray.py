@@ -9,6 +9,9 @@ import time
 import webbrowser
 from datetime import datetime
 
+# Force gtk backend for left-click support (AppIndicator doesn't allow custom left-click)
+os.environ.setdefault("PYSTRAY_BACKEND", "gtk")
+
 try:
     import pystray
     from PIL import Image, ImageDraw
@@ -969,12 +972,16 @@ def _show_control_panel_gtk(icon):
     win.set_position(Gtk.WindowPosition.CENTER)
     win.set_border_width(12)
     win.set_resizable(False)
+    # Set WM_CLASS so desktop environment matches the .desktop file icon
+    win.set_wmclass("claude-discord-bot", "Claude Discord Bot")
 
     icon_path = os.path.join(BOT_DIR, "docs", "icon.ico")
     png_path = os.path.join(BOT_DIR, "docs", "icon-rounded.png")
     try:
         if os.path.exists(png_path):
             win.set_icon_from_file(png_path)
+            # Set as default icon for all windows in this app
+            Gtk.Window.set_default_icon_from_file(png_path)
         elif os.path.exists(icon_path):
             win.set_icon_from_file(icon_path)
     except Exception:
@@ -1172,12 +1179,37 @@ def _usage_fetch_loop(icon):
             pass
 
 
+def _install_desktop_entry():
+    """Install .desktop file so taskbar shows the correct app icon."""
+    apps_dir = os.path.join(os.path.expanduser("~"), ".local", "share", "applications")
+    desktop_file = os.path.join(apps_dir, "claude-discord-bot.desktop")
+    tray_icon = os.path.join(BOT_DIR, "docs", "icon-rounded.png")
+    tray_script = os.path.join(BOT_DIR, "tray", "claude_tray.py")
+    try:
+        os.makedirs(apps_dir, exist_ok=True)
+        with open(desktop_file, "w") as f:
+            f.write(f"""[Desktop Entry]
+Type=Application
+Name=Claude Discord Bot
+Comment=Claude Discord Bot system tray manager
+Exec=python3 {tray_script}
+Icon={tray_icon}
+Terminal=false
+StartupWMClass=claude-discord-bot
+StartupNotify=false
+NoDisplay=true
+""")
+    except Exception:
+        pass
+
+
 def main():
     global current_version
     load_language()
     current_version = get_version()
     check_for_updates()
     load_usage_cache()
+    _install_desktop_entry()
 
     running = is_running()
     has_env = is_env_configured()

@@ -1,6 +1,7 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder, EmbedBuilder } from "discord.js";
-import { readFileSync } from "fs";
-import { homedir } from "os";
+import { readFileSync, writeFileSync } from "fs";
+import { execSync } from "child_process";
+import { homedir, platform } from "os";
 import { join } from "path";
 import { L } from "../../utils/i18n.js";
 
@@ -17,6 +18,7 @@ interface UsageResponse {
   five_hour?: UsageEntry;
   seven_day?: UsageEntry;
   seven_day_sonnet?: UsageEntry;
+  _fetched_at?: string;
 }
 
 function progressBar(pct: number, width = 12): string {
@@ -35,14 +37,35 @@ function formatResetTime(isoStr: string): string {
   return L(`${diffM}m left`, `${diffM}분 후 초기화`);
 }
 
-async function fetchUsage(): Promise<UsageResponse | null> {
+function getAccessToken(): string | null {
+  // 1. Try credentials file (Windows/Linux)
   try {
     const credPath = join(homedir(), ".claude", ".credentials.json");
     const cred = JSON.parse(readFileSync(credPath, "utf-8"));
-    const token: string =
-      cred?.claudeAiOauth?.accessToken ?? cred?.accessToken ?? "";
-    if (!token) return null;
+    const token = cred?.claudeAiOauth?.accessToken ?? cred?.accessToken;
+    if (token) return token;
+  } catch { /* not found */ }
 
+  // 2. Try macOS keychain
+  if (platform() === "darwin") {
+    try {
+      const raw = execSync('security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null', {
+        encoding: "utf-8",
+        timeout: 5000,
+      }).trim();
+      const cred = JSON.parse(raw);
+      return cred?.claudeAiOauth?.accessToken ?? cred?.accessToken ?? null;
+    } catch { /* keychain not available */ }
+  }
+
+  return null;
+}
+
+async function fetchUsageLive(): Promise<UsageResponse | null> {
+  const token = getAccessToken();
+  if (!token) return null;
+
+  try {
     const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -51,16 +74,33 @@ async function fetchUsage(): Promise<UsageResponse | null> {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;
-    return (await res.json()) as UsageResponse;
+    const data = (await res.json()) as UsageResponse;
+
+    // Save to cache for tray app and future reads
+    try {
+      const cachePath = join(homedir(), ".claude", ".usage-cache.json");
+      const cache = { ...data, _fetched_at: new Date().toISOString() };
+      writeFileSync(cachePath, JSON.stringify(cache));
+    } catch { /* ignore cache write failure */ }
+
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function loadUsageCache(): UsageResponse | null {
+  try {
+    const cachePath = join(homedir(), ".claude", ".usage-cache.json");
+    return JSON.parse(readFileSync(cachePath, "utf-8")) as UsageResponse;
   } catch {
     return null;
   }
 }
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
-
-  const data = await fetchUsage();
+  // Try live fetch first, fall back to cache
+  const data = (await fetchUsageLive()) ?? loadUsageCache();
 
   if (!data || (!data.five_hour && !data.seven_day && !data.seven_day_sonnet)) {
     await interaction.editReply({
@@ -93,11 +133,23 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     );
   }
 
+  // Show last fetched time
+  let footerText = L("claude.ai/settings/usage", "claude.ai/settings/usage");
+  if (data._fetched_at) {
+    const fetchedDate = new Date(data._fetched_at);
+    const diffMin = Math.floor((Date.now() - fetchedDate.getTime()) / 60000);
+    if (diffMin < 1) {
+      footerText = L("Just now", "방금 갱신") + "  ·  " + footerText;
+    } else {
+      footerText = L(`${diffMin}m ago`, `${diffMin}분 전 갱신`) + "  ·  " + footerText;
+    }
+  }
+
   const embed = new EmbedBuilder()
     .setTitle(L("📊 Claude Code Usage", "📊 Claude Code 사용량"))
     .setDescription(lines.join("\n\n"))
     .setColor(0x7c3aed)
-    .setFooter({ text: L("Click to open usage page → claude.ai/settings/usage", "사용량 페이지 → claude.ai/settings/usage") })
+    .setFooter({ text: footerText })
     .setTimestamp();
 
   await interaction.editReply({ embeds: [embed] });

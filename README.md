@@ -118,7 +118,7 @@ claudecode-discord/
 │   ├── index.ts                # Entry point
 │   ├── bot/
 │   │   ├── client.ts           # Discord bot init & events
-│   │   ├── commands/           # Slash commands (8)
+│   │   ├── commands/           # Slash commands (10)
 │   │   └── handlers/           # Message & interaction handlers
 │   ├── claude/
 │   │   ├── session-manager.ts  # Session lifecycle

@@ -523,99 +523,76 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func fetchUsageIfStale() {
         let now = Date()
-        let isStale: Bool
-        if let lastFetch = usageLastFetched {
-            isStale = now.timeIntervalSince(lastFetch) >= usageStaleThreshold
-        } else {
-            isStale = true
+        // Check in-memory timestamp first
+        if let lastFetch = usageLastFetched, now.timeIntervalSince(lastFetch) < usageStaleThreshold {
+            return
         }
-        if isStale {
-            fetchUsage()
+        // Fallback: check cache file _fetched_at (survives app restart)
+        if usageLastFetched == nil, let data = try? Data(contentsOf: URL(fileURLWithPath: usageCachePath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let fetchedStr = json["_fetched_at"] as? String,
+           let fetchedDate = ISO8601DateFormatter().date(from: fetchedStr),
+           now.timeIntervalSince(fetchedDate) < usageStaleThreshold {
+            usageLastFetched = fetchedDate
+            return
         }
+        fetchUsage()
     }
 
-    private func writeClaudeUsageHelper() -> (helperPath: String, bridgePath: String)? {
-        let tmpDir = NSTemporaryDirectory()
-        let helperPath = (tmpDir as NSString).appendingPathComponent("claude-discord-usage-helper.mjs")
-        let bridgePath = (tmpDir as NSString).appendingPathComponent("claude-discord-usage-bridge.mjs")
-        let source = """
-        import fs from "fs/promises";
-        import { execFileSync } from "child_process";
-        import { pathToFileURL } from "url";
-
-        const cliBin = execFileSync("/bin/bash", ["-lc", "command -v claude"], { encoding: "utf8" }).trim();
-        if (!cliBin) {
-          throw new Error("claude not found in PATH");
+    private func getAccessToken() -> String? {
+        // Try credentials file first (cross-platform)
+        let credPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/.credentials.json")
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: credPath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let oauth = json["claudeAiOauth"] as? [String: Any],
+           let token = oauth["accessToken"] as? String, !token.isEmpty {
+            return token
         }
 
-        const src = await fs.realpath(cliBin);
-        const bridgePath = process.argv[2];
-        let code = await fs.readFile(src, "utf8");
-        code = code.replace(/tGz\\(\\);\\s*$/, "if (!process.env.CLAUDE_CODE_EMBEDDED_USAGE_ONLY) tGz();\\nexport { r3q, o3q, Rr6, rf1 };\\n");
-        await fs.writeFile(bridgePath, code);
-
-        process.env.CLAUDE_CODE_EMBEDDED_USAGE_ONLY = "1";
-        const mod = await import(pathToFileURL(bridgePath).href + `?t=${Date.now()}`);
-        mod.rf1?.();
-        mod.o3q?.();
-        mod.Rr6?.();
-
-        const data = await mod.r3q();
-        process.stdout.write(JSON.stringify(data ?? {}));
-        """
-
-        do {
-            try source.write(to: URL(fileURLWithPath: helperPath), atomically: true, encoding: .utf8)
-            return (helperPath, bridgePath)
-        } catch {
-            return nil
-        }
-    }
-
-    private func fetchUsageJSONViaClaudeCLI() -> [String: Any]? {
-        guard let paths = writeClaudeUsageHelper() else { return nil }
-
-        let helperEscaped = paths.helperPath.replacingOccurrences(of: "'", with: "'\\''")
-        let bridgeEscaped = paths.bridgePath.replacingOccurrences(of: "'", with: "'\\''")
-        let command = """
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
-        node '\(helperEscaped)' '\(bridgeEscaped)'
-        """
-
+        // macOS: read from keychain via security command
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-lc", command]
-        task.currentDirectoryURL = URL(fileURLWithPath: botDir)
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        task.standardOutput = stdout
-        task.standardError = stderr
-
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in semaphore.signal() }
-
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        task.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
         do {
             try task.run()
-        } catch {
-            return nil
-        }
-
-        if semaphore.wait(timeout: .now() + 12) == .timedOut {
-            task.terminate()
-            return nil
-        }
-
-        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let raw = String(data: stdoutData, encoding: .utf8)?
+            task.waitUntilExit()
+        } catch { return nil }
+        guard task.terminationStatus == 0 else { return nil }
+        let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !raw.isEmpty,
               let data = raw.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return json
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String, !token.isEmpty else { return nil }
+        return token
+    }
+
+    private func fetchUsageViaAPI() -> [String: Any]? {
+        guard let token = getAccessToken() else { return nil }
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
+
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: [String: Any]?
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            guard error == nil,
+                  let httpRes = response as? HTTPURLResponse, httpRes.statusCode == 200,
+                  let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            result = json
+        }.resume()
+
+        _ = semaphore.wait(timeout: .now() + 12)
+        return result
     }
 
     private func fetchUsage(force: Bool = false, openPageOnFail: Bool = false) {
@@ -627,7 +604,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         usageFetchInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
-            guard let json = self.fetchUsageJSONViaClaudeCLI(),
+            guard let json = self.fetchUsageViaAPI(),
                   json["five_hour"] != nil || json["seven_day"] != nil || json["seven_day_sonnet"] != nil else {
                 DispatchQueue.main.async {
                     self.usageFetchInFlight = false
