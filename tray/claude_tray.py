@@ -281,7 +281,9 @@ def perform_update(icon, item):
     subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], capture_output=True)
     time.sleep(1)
 
+    subprocess.run(["git", "stash"], cwd=BOT_DIR)
     subprocess.run(["git", "pull", "origin", "main", "--tags"], cwd=BOT_DIR)
+    subprocess.run(["git", "stash", "pop"], cwd=BOT_DIR)
     subprocess.run(["npm", "install"], cwd=BOT_DIR)
     subprocess.run(["npm", "rebuild", "better-sqlite3"], cwd=BOT_DIR)
     subprocess.run(["npm", "run", "build"], cwd=BOT_DIR)

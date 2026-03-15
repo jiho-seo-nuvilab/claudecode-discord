@@ -397,8 +397,10 @@ class ClaudeBotTray : Form
             Thread.Sleep(2000);
         }
 
-        // git pull
+        // Stash local changes, pull, then restore
+        RunCmdOutput("git", "-C \"" + botDir + "\" stash");
         RunCmdOutput("git", "-C \"" + botDir + "\" pull origin main --tags");
+        RunCmdOutput("git", "-C \"" + botDir + "\" stash pop");
         // npm install, rebuild native modules & build
         RunCmd("cd /d \"" + botDir + "\" && npm install && npm rebuild better-sqlite3 && npm run build", true);
 
