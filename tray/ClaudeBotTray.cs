@@ -441,16 +441,16 @@ class ClaudeBotTray : Form
                 ")\r\n" +
                 ":done\r\n";
 
-            batContent += "del \"" + updateBat + "\" >nul 2>&1\r\n";
-
             File.WriteAllText(updateBat, batContent);
 
-            // VBS로 bat을 숨겨서 실행
-            string vbs = Path.Combine(botDir, ".tray-update.vbs");
-            File.WriteAllText(vbs,
-                "Set ws = CreateObject(\"WScript.Shell\")\n" +
-                "ws.Run \"cmd /c \"\"" + updateBat + "\"\"\", 0, False\n");
-            Process.Start("wscript", "\"" + vbs + "\"");
+            // Run update bat directly
+            var psi = new ProcessStartInfo("cmd.exe", "/c \"" + updateBat + "\"")
+            {
+                WindowStyle = ProcessWindowStyle.Hidden,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            };
+            Process.Start(psi);
 
             // 자기 자신 종료 (bat이 대기 후 처리)
             trayIcon.Visible = false;
