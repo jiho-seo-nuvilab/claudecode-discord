@@ -445,12 +445,11 @@ class ClaudeBotTray : Form
 
             File.WriteAllText(updateBat, batContent);
 
-            // Run update bat directly
+            // Run update bat as independent process (survives parent exit)
             var psi = new ProcessStartInfo("cmd.exe", "/c \"" + updateBat + "\"")
             {
                 WindowStyle = ProcessWindowStyle.Hidden,
-                CreateNoWindow = true,
-                UseShellExecute = false,
+                UseShellExecute = true,
             };
             Process.Start(psi);
 
