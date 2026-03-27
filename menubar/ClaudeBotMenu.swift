@@ -1594,6 +1594,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Bot Controls
 
     @objc private func startBot() {
+        // Auto-rebuild if source is newer than dist
+        let distPath = "\(botDir)/dist/index.js"
+        let rebuildNeeded = runShell("find '\(botDir)/src' -name '*.ts' -newer '\(distPath)' 2>/dev/null | head -1").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rebuildNeeded.isEmpty || !FileManager.default.fileExists(atPath: distPath) {
+            runShell("cd '\(botDir)' && npm install && npm run build 2>&1")
+        }
         runShell("launchctl unload '\(plistDst)' 2>/dev/null")
         generatePlist()
         runShell("launchctl load '\(plistDst)'")

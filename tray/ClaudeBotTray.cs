@@ -679,10 +679,30 @@ class ClaudeBotTray : Form
         }
     }
 
+    private void AutoRebuildIfNeeded()
+    {
+        string distPath = Path.Combine(botDir, "dist", "index.js");
+        string srcDir = Path.Combine(botDir, "src");
+        bool needsRebuild = !File.Exists(distPath);
+        if (!needsRebuild && Directory.Exists(srcDir))
+        {
+            DateTime distTime = File.GetLastWriteTime(distPath);
+            foreach (string ts in Directory.GetFiles(srcDir, "*.ts", SearchOption.AllDirectories))
+            {
+                if (File.GetLastWriteTime(ts) > distTime) { needsRebuild = true; break; }
+            }
+        }
+        if (needsRebuild)
+        {
+            RunCmd("cd /d \"" + botDir + "\" && npm install && npm run build", true);
+        }
+    }
+
     private void StartBot(object sender, EventArgs e)
     {
         botStarting = true;
         RebuildControlPanel();
+        AutoRebuildIfNeeded();
         KillBot();
         // Copy node.exe as ClaudeBot.exe so it shows as "ClaudeBot" in Task Manager
         string claudeBotExe = Path.Combine(botDir, "ClaudeBot.exe");

@@ -334,7 +334,25 @@ def create_icon(color):
     return img
 
 
+def auto_rebuild_if_needed():
+    """Auto-rebuild if source is newer than dist."""
+    dist_path = os.path.join(BOT_DIR, "dist", "index.js")
+    if not os.path.exists(dist_path):
+        subprocess.run(["npm", "install"], capture_output=True, cwd=BOT_DIR)
+        subprocess.run(["npm", "run", "build"], capture_output=True, cwd=BOT_DIR)
+        return
+    dist_mtime = os.path.getmtime(dist_path)
+    src_dir = os.path.join(BOT_DIR, "src")
+    for root, _, files in os.walk(src_dir):
+        for f in files:
+            if f.endswith(".ts") and os.path.getmtime(os.path.join(root, f)) > dist_mtime:
+                subprocess.run(["npm", "install"], capture_output=True, cwd=BOT_DIR)
+                subprocess.run(["npm", "run", "build"], capture_output=True, cwd=BOT_DIR)
+                return
+
+
 def start_bot(icon, item):
+    auto_rebuild_if_needed()
     subprocess.run(["systemctl", "--user", "start", SERVICE_NAME], capture_output=True)
     time.sleep(2)
     update_icon(icon)
