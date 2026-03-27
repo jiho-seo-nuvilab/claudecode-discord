@@ -397,11 +397,9 @@ class ClaudeBotTray : Form
             Thread.Sleep(2000);
         }
 
-        // Stash local changes, pull, then restore
-        RunCmdOutput("git", "-C \"" + botDir + "\" checkout -- package-lock.json");
-        RunCmdOutput("git", "-C \"" + botDir + "\" stash");
-        string pullOutput = RunCmdOutput("git", "-C \"" + botDir + "\" pull origin main --tags");
-        RunCmdOutput("git", "-C \"" + botDir + "\" stash pop");
+        // Fetch and hard reset to avoid merge conflicts
+        RunCmdOutput("git", "-C \"" + botDir + "\" fetch origin main --tags");
+        string pullOutput = RunCmdOutput("git", "-C \"" + botDir + "\" reset --hard origin/main");
 
         // Check if pull succeeded by comparing versions
         string afterPull = RunCmdOutput("git", "-C \"" + botDir + "\" rev-parse HEAD").Trim();
