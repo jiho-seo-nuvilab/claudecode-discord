@@ -298,7 +298,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let output = runShell("cd '\(botDir)' && npm install --production && npm rebuild better-sqlite3 && npm run build 2>&1")
+            let output = runShell("cd '\(botDir)' && npm install && npm rebuild better-sqlite3 && npm run build 2>&1")
 
             currentVersion = getVersion()
             updateAvailable = false
