@@ -341,6 +341,13 @@ Multiple bots in the same guild are distinguishable by bot name when running sla
 - Use `/clear-sessions` to delete all sessions at once
 - `/unregister` removes the DB session mapping
 
+### Manual update
+If the tray update button doesn't work, open a terminal in the bot folder and run:
+```bash
+git fetch origin main --tags && git reset --hard origin/main && npm install && npm rebuild better-sqlite3 && npm run build
+```
+Then restart the bot. After this one-time fix, future tray updates will work normally.
+
 ### Claude Code issues
 - Verify installation with `claude --version`
 - Run `claude` to check login status
