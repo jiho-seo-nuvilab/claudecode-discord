@@ -10,7 +10,7 @@ import { sessionManager } from "../../claude/session-manager.js";
 import { L } from "../../utils/i18n.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("queue")
+  .setName("cc-queue")
   .setDescription("View and manage queued messages in this channel")
   .addSubcommand((sub) =>
     sub.setName("list").setDescription("Show all queued messages")

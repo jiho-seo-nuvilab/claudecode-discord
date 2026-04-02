@@ -254,15 +254,26 @@ export function createResultEmbed(
   costUsd: number,
   durationMs: number,
   showCost: boolean = true,
+  usageSummary?: string | null,
+  contextSummary?: string | null,
+  statusLine?: string | null,
 ): EmbedBuilder {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
-  const footer = showCost
-    ? `${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}  |  ${L("Duration", "소요 시간")} : ${duration}`
-    : `${L("Duration", "소요 시간")} : ${duration}`;
+  const parts: string[] = [];
+  if (showCost) parts.push(`${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}`);
+  parts.push(`${L("Duration", "소요 시간")} : ${duration}`);
+  if (usageSummary) parts.push(`${L("Usage", "사용량")} : ${usageSummary}`);
+  if (contextSummary) parts.push(`${L("Context", "컨텍스트")} : ${contextSummary}`);
+  const footer = parts.join(" • ");
+
+  let description = result.slice(0, 4000);
+  if (statusLine) {
+    description = `${description}\n\n\`${statusLine}\``.slice(0, 4000);
+  }
 
   const embed = new EmbedBuilder()
     .setTitle(L("✅ Task Complete", "✅ 작업 완료"))
-    .setDescription(result.slice(0, 4000))
+    .setDescription(description)
     .setColor(0x00ff00)
     .setFooter({ text: footer })
     .setTimestamp();

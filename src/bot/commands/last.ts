@@ -3,32 +3,36 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import path from "node:path";
-import { getProject, getSession } from "../../db/database.js";
+import { getProject, getSession, getThreadSession } from "../../db/database.js";
 import { findSessionDir, getLastAssistantMessageFull } from "./sessions.js";
 import { splitMessage } from "../../claude/output-formatter.js";
 import { L } from "../../utils/i18n.js";
+import { getProjectChannelIdFromInteraction } from "../project-context.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("last")
+  .setName("cc-last")
   .setDescription("Show the last Claude response from the current session");
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const channelId = interaction.channelId;
-  const project = getProject(channelId);
+  const scopeId = interaction.channelId;
+  const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+  const project = getProject(projectChannelId);
 
   if (!project) {
     await interaction.editReply({
-      content: L("This channel is not registered to any project. Use `/register` first.", "이 채널은 프로젝트에 등록되지 않았습니다. `/register`를 먼저 사용하세요."),
+      content: L("This channel is not registered to any project. Use `/cc-register` first.", "이 채널은 프로젝트에 등록되지 않았습니다. `/cc-register`를 먼저 사용하세요."),
     });
     return;
   }
 
-  const session = getSession(channelId);
+  const session = scopeId === projectChannelId
+    ? getSession(projectChannelId)
+    : getThreadSession(scopeId);
   if (!session?.session_id) {
     await interaction.editReply({
-      content: L("No active session. Select a session from `/sessions`.", "활성 세션이 없습니다. `/sessions`에서 세션을 선택하세요."),
+      content: L("No active session. Select a session from `/cc-sessions`.", "활성 세션이 없습니다. `/cc-sessions`에서 세션을 선택하세요."),
     });
     return;
   }

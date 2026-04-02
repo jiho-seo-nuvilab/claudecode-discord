@@ -5,16 +5,18 @@ import {
 import { getProject } from "../../db/database.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { L } from "../../utils/i18n.js";
+import { getProjectChannelIdFromInteraction } from "../project-context.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("stop")
+  .setName("cc-stop")
   .setDescription("Stop the active Claude Code session in this channel");
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const channelId = interaction.channelId;
-  const project = getProject(channelId);
+  const scopeId = interaction.channelId;
+  const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+  const project = getProject(projectChannelId);
 
   if (!project) {
     await interaction.editReply({
@@ -23,7 +25,7 @@ export async function execute(
     return;
   }
 
-  const stopped = await sessionManager.stopSession(channelId);
+  const stopped = await sessionManager.stopSession(scopeId);
   if (stopped) {
     await interaction.editReply({
       embeds: [

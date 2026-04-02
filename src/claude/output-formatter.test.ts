@@ -204,6 +204,15 @@ describe("createResultEmbed", () => {
     expect(footer).toContain("12.5s");
   });
 
+  it("puts usage and context on the footer line", () => {
+    const embed = createResultEmbed("Done", 0, 12500, false, "5h 2% | 7d 85% | Sonnet 0%", "~12% (24,000 tok)");
+    const footer = embed.data.footer?.text ?? "";
+    expect(footer).toContain("Duration : 12.5s");
+    expect(footer).toContain("Usage : 5h 2% | 7d 85% | Sonnet 0%");
+    expect(footer).toContain("Context : ~12% (24,000 tok)");
+    expect(embed.data.fields).toBeUndefined();
+  });
+
   it("truncates very long result text to 4000 chars", () => {
     const embed = createResultEmbed("x".repeat(5000), 0, 0);
     expect(embed.data.description!.length).toBeLessThanOrEqual(4000);

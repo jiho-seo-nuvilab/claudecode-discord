@@ -19,10 +19,20 @@ import {
   getProject,
   getAllProjects,
   setAutoApprove,
+  setProjectModel,
+  setProjectSkills,
+  getProjectSkills,
+  setGlobalModel,
+  getGlobalModel,
+  setScopeModel,
   upsertSession,
   getSession,
   updateSessionStatus,
   getAllSessions,
+  upsertThreadSession,
+  getThreadSession,
+  getLatestThreadSession,
+  getThreadSessionCount,
 } from "./database.js";
 
 describe("database", () => {
@@ -80,6 +90,23 @@ describe("database", () => {
       setAutoApprove("ch1", false);
       expect(getProject("ch1")!.auto_approve).toBe(0);
     });
+
+    it("stores project model and skills", () => {
+      registerProject("ch1", "/p1", "guild1");
+      setProjectModel("ch1", "sonnet");
+      setProjectSkills("ch1", ["gsd-do", "gstack-review"]);
+      const project = getProject("ch1")!;
+      expect(project.model).toBe("sonnet");
+      expect(getProjectSkills("ch1")).toEqual(["gsd-do", "gstack-review"]);
+    });
+
+    it("stores and resets global model", () => {
+      expect(getGlobalModel()).toBeNull();
+      setGlobalModel("opus");
+      expect(getGlobalModel()).toBe("opus");
+      setGlobalModel(null);
+      expect(getGlobalModel()).toBeNull();
+    });
   });
 
   // ─── Session CRUD ───
@@ -129,6 +156,27 @@ describe("database", () => {
     it("getAllSessions returns empty for guild with no sessions", () => {
       registerProject("ch2", "/p2", "guild2");
       expect(getAllSessions("guild2")).toHaveLength(0);
+    });
+
+    it("stores and counts thread sessions", () => {
+      upsertThreadSession("th1", "ch1", "sdk-thread", "idle", "Topic A");
+      upsertThreadSession("th2", "ch1", "sdk-thread-2", "online", "Topic B");
+      expect(getThreadSessionCount("ch1")).toBe(2);
+      expect(getLatestThreadSession("ch1")?.thread_id).toBeDefined();
+    });
+
+    it("stores model per channel scope session", () => {
+      setScopeModel("ch1", "ch1", "haiku");
+      expect(getSession("ch1")?.model).toBe("haiku");
+      setScopeModel("ch1", "ch1", null);
+      expect(getSession("ch1")?.model).toBeNull();
+    });
+
+    it("stores model per thread scope session", () => {
+      setScopeModel("th1", "ch1", "opus");
+      expect(getThreadSession("th1")?.model).toBe("opus");
+      setScopeModel("th1", "ch1", null);
+      expect(getThreadSession("th1")?.model).toBeNull();
     });
   });
 });

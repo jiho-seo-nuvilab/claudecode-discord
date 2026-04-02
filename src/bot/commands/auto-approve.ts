@@ -4,9 +4,10 @@ import {
 } from "discord.js";
 import { getProject, setAutoApprove } from "../../db/database.js";
 import { L } from "../../utils/i18n.js";
+import { getProjectChannelIdFromInteraction } from "../project-context.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("auto-approve")
+  .setName("cc-auto-approve")
   .setDescription("Toggle auto-approve mode for tool use in this channel")
   .addStringOption((opt) =>
     opt
@@ -22,7 +23,7 @@ export const data = new SlashCommandBuilder()
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const channelId = interaction.channelId;
+  const channelId = getProjectChannelIdFromInteraction(interaction);
   const mode = interaction.options.getString("mode", true);
   const project = getProject(channelId);
 

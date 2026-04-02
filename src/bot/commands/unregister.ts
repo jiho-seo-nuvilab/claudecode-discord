@@ -6,16 +6,17 @@ import {
 import { unregisterProject, getProject } from "../../db/database.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { L } from "../../utils/i18n.js";
+import { getProjectChannelIdFromInteraction } from "../project-context.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("unregister")
+  .setName("cc-unregister")
   .setDescription("Unregister this channel from its project")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const channelId = interaction.channelId;
+  const channelId = getProjectChannelIdFromInteraction(interaction);
   const project = getProject(channelId);
 
   if (!project) {

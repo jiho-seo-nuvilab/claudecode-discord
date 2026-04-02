@@ -6,7 +6,7 @@ import { join } from "path";
 import { L } from "../../utils/i18n.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("usage")
+  .setName("cc-usage")
   .setDescription("Show Claude Code usage (Session 5hr / Weekly / Sonnet)");
 
 interface UsageEntry {
@@ -19,6 +19,60 @@ interface UsageResponse {
   seven_day?: UsageEntry;
   seven_day_sonnet?: UsageEntry;
   _fetched_at?: string;
+}
+
+export interface UsageSnapshot {
+  fiveHourPct?: number;
+  fiveHourRemaining?: string;
+  weekPct?: number;
+  weekRemaining?: string;
+  sonnetPct?: number;
+}
+
+export async function getUsageSummaryLine(): Promise<string | null> {
+  const data = (await fetchUsageLive()) ?? loadUsageCache();
+  if (!data) return null;
+
+  const parts: string[] = [];
+  if (data.five_hour) parts.push(`5h ${Math.round(data.five_hour.utilization)}%`);
+  if (data.seven_day) parts.push(`7d ${Math.round(data.seven_day.utilization)}%`);
+  if (data.seven_day_sonnet) parts.push(`Sonnet ${Math.round(data.seven_day_sonnet.utilization)}%`);
+  return parts.length > 0 ? parts.join(" | ") : null;
+}
+
+function formatCompactRemaining(isoStr?: string): string | undefined {
+  if (!isoStr) return undefined;
+  const resetDate = new Date(isoStr);
+  const now = new Date();
+  let diffMs = resetDate.getTime() - now.getTime();
+  if (diffMs <= 0) return "0m";
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const hourMs = 60 * 60 * 1000;
+  const minMs = 60 * 1000;
+
+  const days = Math.floor(diffMs / dayMs);
+  diffMs -= days * dayMs;
+  const hours = Math.floor(diffMs / hourMs);
+  diffMs -= hours * hourMs;
+  const mins = Math.floor(diffMs / minMs);
+
+  if (days > 0) return `${days}d${hours}h`;
+  if (hours > 0) return `${hours}h${mins}m`;
+  return `${mins}m`;
+}
+
+export async function getUsageSnapshot(): Promise<UsageSnapshot | null> {
+  const data = (await fetchUsageLive()) ?? loadUsageCache();
+  if (!data) return null;
+
+  return {
+    fiveHourPct: data.five_hour ? Math.round(data.five_hour.utilization) : undefined,
+    fiveHourRemaining: formatCompactRemaining(data.five_hour?.resets_at),
+    weekPct: data.seven_day ? Math.round(data.seven_day.utilization) : undefined,
+    weekRemaining: formatCompactRemaining(data.seven_day?.resets_at),
+    sonnetPct: data.seven_day_sonnet ? Math.round(data.seven_day_sonnet.utilization) : undefined,
+  };
 }
 
 function progressBar(pct: number, width = 12): string {

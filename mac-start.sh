@@ -190,14 +190,15 @@ generate_plist() {
     <string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>$SCRIPT_DIR/mac-start.sh</string>
-        <string>--fg</string>
+        <string>$(which node)</string>
+        <string>dist/index.js</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$SCRIPT_DIR</string>
+    <key>RunAtLoad</key>
+    <true/>
     <key>KeepAlive</key>
-    <false/>
+    <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
@@ -245,6 +246,8 @@ if [ -f "$MENUBAR" ]; then
     <key>WorkingDirectory</key>
     <string>$SCRIPT_DIR</string>
     <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
     <string>/dev/null</string>

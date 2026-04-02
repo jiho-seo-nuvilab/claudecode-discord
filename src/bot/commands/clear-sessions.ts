@@ -5,24 +5,25 @@ import {
 } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
-import { getProject } from "../../db/database.js";
+import { clearProjectSessions, getProject } from "../../db/database.js";
 import { findSessionDir } from "./sessions.js";
 import { L } from "../../utils/i18n.js";
+import { getProjectChannelIdFromInteraction } from "../project-context.js";
 
 export const data = new SlashCommandBuilder()
-  .setName("clear-sessions")
+  .setName("cc-clear-sessions")
   .setDescription("Delete all Claude Code session files for this project")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const channelId = interaction.channelId;
+  const channelId = getProjectChannelIdFromInteraction(interaction);
   const project = getProject(channelId);
 
   if (!project) {
     await interaction.editReply({
-      content: L("This channel is not registered to any project. Use `/register` first.", "이 채널은 어떤 프로젝트에도 등록되어 있지 않습니다. 먼저 `/register`를 사용하세요."),
+      content: L("This channel is not registered to any project. Use `/cc-register` first.", "이 채널은 어떤 프로젝트에도 등록되어 있지 않습니다. 먼저 `/cc-register`를 사용하세요."),
     });
     return;
   }
@@ -52,6 +53,8 @@ export async function execute(
       // skip files that can't be deleted
     }
   }
+
+  clearProjectSessions(channelId);
 
   await interaction.editReply({
     embeds: [

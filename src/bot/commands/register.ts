@@ -10,14 +10,23 @@ import { registerProject, getProject } from "../../db/database.js";
 import { validateProjectPath } from "../../security/guard.js";
 import { getConfig } from "../../utils/config.js";
 import { L } from "../../utils/i18n.js";
+import { buildDefaultOpsHint } from "../../utils/skills.js";
+
+function getRegisterBaseDir(): string {
+  const config = getConfig();
+  const gitDir = path.join(config.BASE_PROJECT_DIR, "git");
+  return fs.existsSync(gitDir) && fs.statSync(gitDir).isDirectory()
+    ? gitDir
+    : config.BASE_PROJECT_DIR;
+}
 
 export const data = new SlashCommandBuilder()
-  .setName("register")
+  .setName("cc-register")
   .setDescription("Register this channel to a project directory")
   .addStringOption((opt) =>
     opt
       .setName("path")
-      .setDescription(`Project folder name (${getConfig().BASE_PROJECT_DIR})`)
+      .setDescription(`Project folder name (${getRegisterBaseDir()})`)
       .setRequired(true)
       .setAutocomplete(true),
   )
@@ -28,10 +37,11 @@ export async function execute(
 ): Promise<void> {
   const input = interaction.options.getString("path", true);
   const config = getConfig();
+  const baseDir = getRegisterBaseDir();
   // If input is absolute path, use as-is; otherwise join with base dir
   const projectPath = path.isAbsolute(input)
     ? input
-    : path.join(config.BASE_PROJECT_DIR, input);
+    : path.join(baseDir, input);
   const channelId = interaction.channelId;
   const guildId = interaction.guildId!;
 
@@ -39,7 +49,7 @@ export async function execute(
   const existing = getProject(channelId);
   if (existing) {
     await interaction.editReply({
-      content: L(`This channel is already registered to \`${existing.project_path}\`. Use \`/unregister\` first.`, `이 채널은 이미 \`${existing.project_path}\`에 등록되어 있습니다. 먼저 \`/unregister\`를 사용하세요.`),
+      content: L(`This channel is already registered to \`${existing.project_path}\`. Use \`/cc-unregister\` first.`, `이 채널은 이미 \`${existing.project_path}\`에 등록되어 있습니다. 먼저 \`/cc-unregister\`를 사용하세요.`),
     });
     return;
   }
@@ -47,9 +57,9 @@ export async function execute(
   // Create directory if it doesn't exist (new project)
   if (!fs.existsSync(projectPath)) {
     const resolved = path.resolve(projectPath);
-    const baseDir = path.resolve(config.BASE_PROJECT_DIR);
-    if (!resolved.startsWith(baseDir + path.sep) && resolved !== baseDir) {
-      await interaction.editReply({ content: L(`Invalid path: Path must be within ${baseDir}`, `잘못된 경로: ${baseDir} 내에 있어야 합니다`) });
+    const resolvedBaseDir = path.resolve(baseDir);
+    if (!resolved.startsWith(resolvedBaseDir + path.sep) && resolved !== resolvedBaseDir) {
+      await interaction.editReply({ content: L(`Invalid path: Path must be within ${resolvedBaseDir}`, `잘못된 경로: ${resolvedBaseDir} 내에 있어야 합니다`) });
       return;
     }
     if (projectPath.includes("..")) {
@@ -77,6 +87,7 @@ export async function execute(
         fields: [
           { name: L("Status", "상태"), value: L("🔴 Offline", "🔴 오프라인"), inline: true },
           { name: L("Auto-approve", "자동 승인"), value: L("Off", "꺼짐"), inline: true },
+          { name: L("Next", "다음 단계"), value: buildDefaultOpsHint().slice(0, 1024), inline: false },
         ],
       },
     ],
@@ -87,8 +98,7 @@ export async function autocomplete(
   interaction: AutocompleteInteraction,
 ): Promise<void> {
   const focused = interaction.options.getFocused();
-  const config = getConfig();
-  const baseDir = config.BASE_PROJECT_DIR;
+  const baseDir = getRegisterBaseDir();
 
   try {
     // Split into parent path and current typed prefix

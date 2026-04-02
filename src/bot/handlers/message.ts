@@ -1,7 +1,8 @@
-import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
-import { getProject } from "../../db/database.js";
+import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } from "discord.js";
+import { getProject, getLatestThreadSession } from "../../db/database.js";
 import { isAllowedUser, checkRateLimit } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
+import { setPendingRootPrompt } from "../thread-router.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -64,8 +65,12 @@ export async function handleMessage(message: Message): Promise<void> {
   // Ignore bots and DMs
   if (message.author.bot || !message.guild) return;
 
-  // Check if channel is registered
-  const project = getProject(message.channelId);
+  const isThread = message.channel.isThread();
+  const projectChannelId = isThread ? message.channel.parentId : message.channelId;
+  if (!projectChannelId) return;
+
+  // Check if channel or parent channel is registered
+  const project = getProject(projectChannelId);
   if (!project) return;
 
   // Auth check
@@ -81,10 +86,11 @@ export async function handleMessage(message: Message): Promise<void> {
   }
 
   // Check for pending custom text input (AskUserQuestion "직접 입력")
-  if (sessionManager.hasPendingCustomInput(message.channelId)) {
+  const scopeId = isThread ? message.channelId : projectChannelId;
+  if (sessionManager.hasPendingCustomInput(scopeId)) {
     const text = message.content.trim();
     if (text) {
-      sessionManager.resolveCustomInput(message.channelId, text);
+      sessionManager.resolveCustomInput(scopeId, text);
       await message.react("✅");
     }
     return;
@@ -126,27 +132,62 @@ export async function handleMessage(message: Message): Promise<void> {
 
   const channel = message.channel as TextChannel;
 
-  // If session is active, offer to queue the message
-  if (sessionManager.isActive(message.channelId)) {
-    if (sessionManager.hasQueue(message.channelId)) {
+  if (!isThread) {
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`project-new-thread:${projectChannelId}:${message.id}`)
+        .setLabel(L("New Thread", "새 스레드"))
+        .setStyle(ButtonStyle.Primary),
+    );
+
+    const latestThread = getLatestThreadSession(projectChannelId);
+    if (latestThread) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`project-continue-thread:${projectChannelId}:${message.id}:${latestThread.thread_id}`)
+          .setLabel(L("Continue Recent", "최근 세션 이어가기"))
+          .setStyle(ButtonStyle.Secondary),
+      );
+    }
+
+    setPendingRootPrompt({
+      channelId: projectChannelId,
+      prompt,
+      authorId: message.author.id,
+      sourceMessageId: message.id,
+    });
+
+    await message.reply({
+      content: latestThread
+        ? L("Choose how to handle this topic.", "이 주제를 어떻게 처리할지 선택하세요.")
+        : L("Start a new thread session for this topic.", "이 주제로 새 스레드 세션을 시작하세요."),
+      components: [row],
+    });
+    return;
+  }
+
+  // If session is active in a thread, offer to queue the message
+  if (sessionManager.isActive(scopeId)) {
+    if (sessionManager.hasQueue(scopeId)) {
       await message.reply(L("⏳ A message is already waiting to be queued. Please press the button first.", "⏳ 이미 큐 추가 대기 중인 메시지가 있습니다. 버튼을 먼저 눌러주세요."));
       return;
     }
-    if (sessionManager.isQueueFull(message.channelId)) {
+    if (sessionManager.isQueueFull(scopeId)) {
       await message.reply(L("⏳ Queue is full (max 5). Please wait for the current task to finish.", "⏳ 큐가 가득 찼습니다 (최대 5개). 현재 작업 완료를 기다려주세요."));
       return;
     }
 
-    sessionManager.setPendingQueue(message.channelId, channel, prompt);
+    sessionManager.setPendingQueue(scopeId, channel, prompt);
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`queue-yes:${message.channelId}`)
+        .setCustomId(`queue-yes:${scopeId}`)
         .setLabel(L("Add to Queue", "큐에 추가"))
         .setStyle(ButtonStyle.Success)
         .setEmoji("✅"),
       new ButtonBuilder()
-        .setCustomId(`queue-no:${message.channelId}`)
+        .setCustomId(`queue-no:${scopeId}`)
         .setLabel(L("Cancel", "취소"))
         .setStyle(ButtonStyle.Secondary)
         .setEmoji("❌"),
@@ -159,6 +200,13 @@ export async function handleMessage(message: Message): Promise<void> {
     return;
   }
 
-  // Send message to Claude session
-  await sessionManager.sendMessage(channel, prompt);
+  if (message.channel.type !== ChannelType.PublicThread && message.channel.type !== ChannelType.PrivateThread) {
+    return;
+  }
+
+  await sessionManager.sendMessage(channel, prompt, {
+    scopeId,
+    projectChannelId,
+    topic: message.channel.name,
+  });
 }

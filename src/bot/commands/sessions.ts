@@ -10,6 +10,7 @@ import os from "node:os";
 import readline from "node:readline";
 import { getProject, getSession, upsertSession } from "../../db/database.js";
 import { L } from "../../utils/i18n.js";
+import { getProjectChannelIdFromInteraction } from "../project-context.js";
 
 interface SessionInfo {
   sessionId: string;
@@ -195,7 +196,7 @@ async function getFirstUserMessage(filePath: string): Promise<{ text: string; ti
 /**
  * List all session JSONL files for a given project path.
  */
-async function listSessions(projectPath: string): Promise<SessionInfo[]> {
+export async function listSessions(projectPath: string): Promise<SessionInfo[]> {
   const sessionDir = findSessionDir(projectPath);
   if (!sessionDir) return [];
 
@@ -230,18 +231,18 @@ async function listSessions(projectPath: string): Promise<SessionInfo[]> {
 }
 
 export const data = new SlashCommandBuilder()
-  .setName("sessions")
+  .setName("cc-sessions")
   .setDescription("List and resume existing Claude Code sessions for this project");
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const channelId = interaction.channelId;
+  const channelId = getProjectChannelIdFromInteraction(interaction);
   const project = getProject(channelId);
 
   if (!project) {
     await interaction.editReply({
-      content: L("This channel is not registered to any project. Use `/register` first.", "이 채널은 어떤 프로젝트에도 등록되어 있지 않습니다. 먼저 `/register`를 사용하세요."),
+      content: L("This channel is not registered to any project. Use `/cc-register` first.", "이 채널은 어떤 프로젝트에도 등록되어 있지 않습니다. 먼저 `/cc-register`를 사용하세요."),
     });
     return;
   }
