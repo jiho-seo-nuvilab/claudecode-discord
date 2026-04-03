@@ -182,35 +182,35 @@ describe("createToolApprovalEmbed", () => {
 // ─── createResultEmbed ───
 
 describe("createResultEmbed", () => {
-  it("shows cost in footer when showCost is true", () => {
+  it("shows cost and duration in description when showCost is true", () => {
     const embed = createResultEmbed("Done", 0.0123, 5000, true);
-    const footer = embed.data.footer?.text ?? "";
-    expect(footer).toContain("Cost");
-    expect(footer).toContain("$0.0123");
-    expect(footer).toContain("Duration");
-    expect(footer).toContain("5.0s");
+    const description = embed.data.description ?? "";
+    expect(description).toContain("Cost");
+    expect(description).toContain("$0.0123");
+    expect(description).toContain("Duration : 5.0s");
   });
 
-  it("hides cost in footer when showCost is false", () => {
+  it("hides cost when showCost is false", () => {
     const embed = createResultEmbed("Done", 0.0123, 5000, false);
-    const footer = embed.data.footer?.text ?? "";
-    expect(footer).not.toContain("Cost");
-    expect(footer).toContain("Duration : 5.0s");
+    const description = embed.data.description ?? "";
+    expect(description).not.toContain("Cost");
+    expect(description).toContain("Duration : 5.0s");
   });
 
   it("formats duration correctly", () => {
     const embed = createResultEmbed("Done", 0, 12500, true);
-    const footer = embed.data.footer?.text ?? "";
-    expect(footer).toContain("12.5s");
+    const description = embed.data.description ?? "";
+    expect(description).toContain("12.5s");
   });
 
-  it("puts usage and context on the footer line", () => {
+  it("puts usage and context on separate lines in description", () => {
     const embed = createResultEmbed("Done", 0, 12500, false, "5h 2% | 7d 85% | Sonnet 0%", "~12% (24,000 tok)");
-    const footer = embed.data.footer?.text ?? "";
-    expect(footer).toContain("Duration : 12.5s");
-    expect(footer).toContain("Usage : 5h 2% | 7d 85% | Sonnet 0%");
-    expect(footer).toContain("Context : ~12% (24,000 tok)");
-    expect(embed.data.fields).toBeUndefined();
+    const description = embed.data.description ?? "";
+    expect(description).toContain("5h 2%");
+    expect(description).toContain("7d 85%");
+    expect(description).toContain("Sonnet 0%");
+    expect(description).toContain("Context : ~12% (24,000 tok)");
+    expect(description).toContain("Duration : 12.5s");
   });
 
   it("truncates very long result text to 4000 chars", () => {

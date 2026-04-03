@@ -1,5 +1,5 @@
 import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } from "discord.js";
-import { getProject, getLatestThreadSession } from "../../db/database.js";
+import { getProject, getLatestThreadSession, getThreadSession } from "../../db/database.js";
 import { isAllowedUser, checkRateLimit } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { setPendingRootPrompt } from "../thread-router.js";
@@ -19,6 +19,47 @@ const BLOCKED_EXTENSIONS = new Set([
 ]);
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB (Discord free tier limit)
+
+export function shouldPreferFreshSession(prompt: string, hasAttachments: boolean): boolean {
+  if (hasAttachments) return false;
+  const trimmed = prompt.trim();
+  if (!trimmed) return false;
+
+  const shortGreeting = /^(hi|hello|hey|yo|sup|test|ping|하이|안녕|헬로|ㅎㅇ)$/i;
+  if (shortGreeting.test(trimmed)) return true;
+
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  return trimmed.length <= 24 && words.length <= 4;
+}
+
+export function shouldUseUltraFastMode(prompt: string, hasAttachments: boolean): boolean {
+  if (hasAttachments) return false;
+  const trimmed = prompt.trim();
+  if (!trimmed) return false;
+
+  const normalized = trimmed.toLowerCase();
+  const ultraFastPrompts = new Set([
+    "hi",
+    "hello",
+    "hey",
+    "yo",
+    "sup",
+    "test",
+    "ping",
+    "하이",
+    "안녕",
+    "안녕?",
+    "안녕!",
+    "헬로",
+    "ㅎㅇ",
+    "?",
+    "??",
+    "ping?",
+    "test?",
+  ]);
+
+  return ultraFastPrompts.has(normalized);
+}
 
 async function downloadAttachment(
   attachment: Attachment,
@@ -129,6 +170,15 @@ export async function handleMessage(message: Message): Promise<void> {
   }
 
   if (!prompt) return;
+  const hasAttachments = imagePaths.length > 0 || filePaths.length > 0;
+  const existingThreadSession = isThread ? getThreadSession(scopeId) : null;
+  const hasExistingThreadContext = Boolean(existingThreadSession?.session_id);
+  const preferFreshSession = hasExistingThreadContext
+    ? false
+    : shouldPreferFreshSession(message.content.trim(), hasAttachments);
+  const preferUltraFast = hasExistingThreadContext
+    ? false
+    : shouldUseUltraFastMode(message.content.trim(), hasAttachments);
 
   const channel = message.channel as TextChannel;
 
@@ -178,7 +228,7 @@ export async function handleMessage(message: Message): Promise<void> {
       return;
     }
 
-    sessionManager.setPendingQueue(scopeId, channel, prompt);
+    sessionManager.setPendingQueue(scopeId, channel, prompt, message.id);
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
@@ -208,5 +258,8 @@ export async function handleMessage(message: Message): Promise<void> {
     scopeId,
     projectChannelId,
     topic: message.channel.name,
+    preferFreshSession,
+    preferUltraFast,
+    sourceMessageId: message.id,
   });
 }

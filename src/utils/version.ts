@@ -23,14 +23,28 @@ function readAppVersion(): string {
 }
 
 function readClaudeCodeVersion(): string {
+  const claudeBinCandidates = [
+    "claude",
+    path.join(process.env.HOME ?? "", ".local", "bin", "claude"),
+    "/Users/seojiho/.local/bin/claude",
+  ].filter(Boolean);
+
   try {
-    const out = execSync("claude --version", {
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const m = out.match(/^([0-9]+\.[0-9]+\.[0-9]+)/);
-    return (m?.[1] ?? out) || "unknown";
+    for (const candidate of claudeBinCandidates) {
+      try {
+        const out = execSync(`"${candidate}" --version`, {
+          encoding: "utf-8",
+          timeout: 3000,
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        const m = out.match(/^([0-9]+\.[0-9]+\.[0-9]+)/);
+        const parsed = (m?.[1] ?? out) || "unknown";
+        if (parsed !== "unknown") return parsed;
+      } catch {
+        // try next candidate
+      }
+    }
+    return "unknown";
   } catch {
     return "unknown";
   }

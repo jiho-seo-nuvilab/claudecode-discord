@@ -29,14 +29,28 @@ export interface UsageSnapshot {
   sonnetPct?: number;
 }
 
+function compactBar(pct: number, width = 10): string {
+  const filled = Math.max(0, Math.min(width, Math.round((pct / 100) * width)));
+  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
+}
+
 export async function getUsageSummaryLine(): Promise<string | null> {
   const data = (await fetchUsageLive()) ?? loadUsageCache();
   if (!data) return null;
 
   const parts: string[] = [];
-  if (data.five_hour) parts.push(`5h ${Math.round(data.five_hour.utilization)}%`);
-  if (data.seven_day) parts.push(`7d ${Math.round(data.seven_day.utilization)}%`);
-  if (data.seven_day_sonnet) parts.push(`Sonnet ${Math.round(data.seven_day_sonnet.utilization)}%`);
+  if (data.five_hour) {
+    const pct = Math.round(data.five_hour.utilization);
+    parts.push(`5h ${compactBar(pct)} ${pct}%`);
+  }
+  if (data.seven_day) {
+    const pct = Math.round(data.seven_day.utilization);
+    parts.push(`7d ${compactBar(pct)} ${pct}%`);
+  }
+  if (data.seven_day_sonnet) {
+    const pct = Math.round(data.seven_day_sonnet.utilization);
+    parts.push(`Sonnet ${compactBar(pct)} ${pct}%`);
+  }
   return parts.length > 0 ? parts.join(" | ") : null;
 }
 

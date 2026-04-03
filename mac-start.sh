@@ -176,7 +176,8 @@ generate_plist() {
             fi
         done
     fi
-    local PLIST_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    local LOCAL_CLAUDE_BIN="$HOME/.local/bin"
+    local PLIST_PATH="$LOCAL_CLAUDE_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     if [ -n "$NODE_BIN_DIR" ] && [[ ":$PLIST_PATH:" != *":$NODE_BIN_DIR:"* ]]; then
         PLIST_PATH="$NODE_BIN_DIR:$PLIST_PATH"
     fi

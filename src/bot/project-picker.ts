@@ -3,7 +3,15 @@ import path from "node:path";
 import os from "node:os";
 import { getConfig } from "../utils/config.js";
 
-const pickerState = new Map<string, string>();
+const PAGE_SIZE = 24;
+
+type PickerState = {
+  dir: string;
+  query: string;
+  page: number;
+};
+
+const pickerState = new Map<string, PickerState>();
 
 function ensureWithinRoot(root: string, candidate: string): string {
   const resolvedRoot = path.resolve(root);
@@ -12,6 +20,23 @@ function ensureWithinRoot(root: string, candidate: string): string {
     return resolvedCandidate;
   }
   return resolvedRoot;
+}
+
+function getDefaultState(channelId: string): PickerState {
+  return { dir: getPickerRootDir(), query: "", page: 0 };
+}
+
+function getState(channelId: string): PickerState {
+  const current = pickerState.get(channelId);
+  if (current) return current;
+  const next = getDefaultState(channelId);
+  pickerState.set(channelId, next);
+  return next;
+}
+
+function setState(channelId: string, next: PickerState): PickerState {
+  pickerState.set(channelId, next);
+  return next;
 }
 
 export function getPickerRootDir(): string {
@@ -26,34 +51,86 @@ export function getPickerRootDir(): string {
 export function setPickerDir(channelId: string, dir: string): string {
   const root = getPickerRootDir();
   const safeDir = ensureWithinRoot(root, dir);
-  pickerState.set(channelId, safeDir);
+  const state = getState(channelId);
+  setState(channelId, { ...state, dir: safeDir, page: 0 });
   return safeDir;
 }
 
 export function getPickerDir(channelId: string): string {
-  const current = pickerState.get(channelId);
-  if (current) return setPickerDir(channelId, current);
-  return setPickerDir(channelId, getPickerRootDir());
+  const current = getState(channelId).dir;
+  return setPickerDir(channelId, current);
+}
+
+export function getPickerQuery(channelId: string): string {
+  return getState(channelId).query;
+}
+
+export function setPickerQuery(channelId: string, query: string): string {
+  const state = getState(channelId);
+  setState(channelId, { ...state, query: query.trim(), page: 0 });
+  return query.trim();
+}
+
+export function clearPickerQuery(channelId: string): void {
+  const state = getState(channelId);
+  setState(channelId, { ...state, query: "", page: 0 });
 }
 
 export function movePickerUp(channelId: string): string {
   const root = getPickerRootDir();
   const current = getPickerDir(channelId);
   if (path.resolve(current) === path.resolve(root)) return current;
-  const parent = path.dirname(current);
-  return setPickerDir(channelId, parent);
+  return setPickerDir(channelId, path.dirname(current));
+}
+
+export function movePickerPage(channelId: string, delta: number): number {
+  const state = getState(channelId);
+  const next = Math.max(0, state.page + delta);
+  setState(channelId, { ...state, page: next });
+  return next;
+}
+
+export function createPickerFolder(channelId: string, name: string): { ok: boolean; path?: string; error?: string } {
+  const trimmed = name.trim();
+  if (!trimmed) return { ok: false, error: "empty" };
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed === "." || trimmed === "..") {
+    return { ok: false, error: "invalid" };
+  }
+
+  const currentDir = getPickerDir(channelId);
+  const fullPath = path.join(currentDir, trimmed);
+  if (fs.existsSync(fullPath)) return { ok: false, error: "exists" };
+
+  fs.mkdirSync(fullPath, { recursive: false });
+  setPickerDir(channelId, currentDir);
+  return { ok: true, path: fullPath };
 }
 
 export function listPickerOptions(channelId: string): {
   rootDir: string;
   currentDir: string;
+  query: string;
+  page: number;
+  totalPages: number;
+  totalMatches: number;
   options: { label: string; value: string; description: string }[];
 } {
   const rootDir = getPickerRootDir();
+  const state = getState(channelId);
   const currentDir = getPickerDir(channelId);
+  const query = state.query.toLowerCase();
+
   const entries = fs.readdirSync(currentDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .filter((entry) => !query || entry.name.toLowerCase().includes(query))
     .sort((a, b) => a.name.localeCompare(b.name));
+
+  const totalMatches = entries.length;
+  const totalPages = Math.max(1, Math.ceil(totalMatches / PAGE_SIZE));
+  const safePage = Math.min(state.page, totalPages - 1);
+  if (safePage !== state.page) setState(channelId, { ...state, page: safePage, dir: currentDir });
+  const start = safePage * PAGE_SIZE;
+  const pageEntries = entries.slice(start, start + PAGE_SIZE);
 
   const options = [
     {
@@ -61,7 +138,7 @@ export function listPickerOptions(channelId: string): {
       value: ".",
       description: currentDir.slice(0, 100),
     },
-    ...entries.map((entry) => {
+    ...pageEntries.map((entry) => {
       const full = path.join(currentDir, entry.name);
       return {
         label: entry.name.slice(0, 100),
@@ -69,7 +146,15 @@ export function listPickerOptions(channelId: string): {
         description: full.slice(0, 100),
       };
     }),
-  ].slice(0, 25);
+  ];
 
-  return { rootDir, currentDir, options };
+  return {
+    rootDir,
+    currentDir,
+    query: state.query,
+    page: safePage,
+    totalPages,
+    totalMatches,
+    options,
+  };
 }

@@ -6,6 +6,11 @@ import {
   ButtonStyle,
   StringSelectMenuBuilder,
   ChannelType,
+  ModalSubmitInteraction,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  type InteractionReplyOptions,
 } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -28,21 +33,27 @@ import { findSessionDir, getLastAssistantMessage } from "../commands/sessions.js
 import { clearPendingRootPrompt, consumePendingRootPrompt } from "../thread-router.js";
 import { L } from "../../utils/i18n.js";
 import { buildDefaultOpsHint, buildSkillIntro } from "../../utils/skills.js";
-import { getPickerDir, listPickerOptions, movePickerUp, setPickerDir } from "../project-picker.js";
+import {
+  clearPickerQuery,
+  createPickerFolder,
+  getPickerDir,
+  listPickerOptions,
+  movePickerPage,
+  movePickerUp,
+  setPickerDir,
+  setPickerQuery,
+} from "../project-picker.js";
 
-async function showProjectPicker(
-  interaction: ButtonInteraction | StringSelectMenuInteraction,
-): Promise<void> {
-  const existing = getProject(interaction.channelId);
-  const { rootDir, currentDir, options } = listPickerOptions(interaction.channelId);
+function buildProjectPickerView(channelId: string): InteractionReplyOptions {
+  const existing = getProject(channelId);
+  const { rootDir, currentDir, options, page, totalPages, totalMatches, query } = listPickerOptions(channelId);
 
   if (options.length === 0) {
-    await interaction.update({
+    return {
       content: L(`No folders found under \`${currentDir}\`.`, `\`${currentDir}\` 아래에 폴더가 없습니다.`),
       embeds: [],
       components: [],
-    });
-    return;
+    };
   }
 
   const select = new StringSelectMenuBuilder()
@@ -50,18 +61,18 @@ async function showProjectPicker(
     .setPlaceholder(L("Choose a project folder", "프로젝트 폴더를 선택하세요"))
     .addOptions(options);
 
-  await interaction.update({
+  return {
     embeds: [
       {
         title: L("Project Picker", "프로젝트 선택"),
         description: existing
           ? L(
-            `Current project: \`${existing.project_path}\`\n\nBrowsing: \`${currentDir}\`\nRoot: \`${rootDir}\``,
-            `현재 프로젝트: \`${existing.project_path}\`\n\n현재 탐색 경로: \`${currentDir}\`\n루트: \`${rootDir}\``,
+            `Current project: \`${existing.project_path}\`\n\nBrowsing: \`${currentDir}\`\nRoot: \`${rootDir}\`\nMatches: ${totalMatches} · Page ${page + 1}/${totalPages}${query ? `\nSearch: \`${query}\`` : ""}`,
+            `현재 프로젝트: \`${existing.project_path}\`\n\n현재 탐색 경로: \`${currentDir}\`\n루트: \`${rootDir}\`\n결과: ${totalMatches} · 페이지 ${page + 1}/${totalPages}${query ? `\n검색: \`${query}\`` : ""}`,
           )
           : L(
-            `Select a project under \`${currentDir}\`.\nRoot: \`${rootDir}\``,
-            `\`${currentDir}\` 아래 프로젝트를 선택하세요.\n루트: \`${rootDir}\``,
+            `Select a project under \`${currentDir}\`.\nRoot: \`${rootDir}\`\nMatches: ${totalMatches} · Page ${page + 1}/${totalPages}${query ? `\nSearch: \`${query}\`` : ""}`,
+            `\`${currentDir}\` 아래 프로젝트를 선택하세요.\n루트: \`${rootDir}\`\n결과: ${totalMatches} · 페이지 ${page + 1}/${totalPages}${query ? `\n검색: \`${query}\`` : ""}`,
           ),
         color: 0x5865f2,
       },
@@ -75,12 +86,43 @@ async function showProjectPicker(
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(path.resolve(currentDir) === path.resolve(rootDir)),
         new ButtonBuilder()
+          .setCustomId("project-prev:_")
+          .setLabel(L("Prev", "이전"))
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page === 0),
+        new ButtonBuilder()
+          .setCustomId("project-next:_")
+          .setLabel(L("Next", "다음"))
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page >= totalPages - 1),
+        new ButtonBuilder()
           .setCustomId("project-refresh:_")
           .setLabel(L("Refresh", "새로고침"))
           .setStyle(ButtonStyle.Secondary),
       ),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId("project-search:_")
+          .setLabel(L("Search", "검색"))
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("project-clear-search:_")
+          .setLabel(L("Clear Search", "검색 해제"))
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(!query),
+        new ButtonBuilder()
+          .setCustomId("project-create:_")
+          .setLabel(L("New Folder", "새 폴더"))
+          .setStyle(ButtonStyle.Success),
+      ),
     ],
-  });
+  };
+}
+
+async function showProjectPicker(
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
+): Promise<void> {
+  await interaction.update(buildProjectPickerView(interaction.channelId));
 }
 
 export async function handleButtonInteraction(
@@ -107,6 +149,60 @@ export async function handleButtonInteraction(
   if (action === "project-up") {
     movePickerUp(interaction.channelId);
     await showProjectPicker(interaction);
+    return;
+  }
+
+  if (action === "project-prev") {
+    movePickerPage(interaction.channelId, -1);
+    await showProjectPicker(interaction);
+    return;
+  }
+
+  if (action === "project-next") {
+    movePickerPage(interaction.channelId, 1);
+    await showProjectPicker(interaction);
+    return;
+  }
+
+  if (action === "project-clear-search") {
+    clearPickerQuery(interaction.channelId);
+    await showProjectPicker(interaction);
+    return;
+  }
+
+  if (action === "project-search") {
+    const modal = new ModalBuilder()
+      .setCustomId("project-search-modal")
+      .setTitle(L("Search Projects", "프로젝트 검색"));
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId("query")
+          .setLabel(L("Folder name contains", "폴더 이름 검색"))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setPlaceholder(L("android, api, server...", "android, api, server...")),
+      ),
+    );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action === "project-create") {
+    const modal = new ModalBuilder()
+      .setCustomId("project-create-modal")
+      .setTitle(L("Create Folder", "폴더 생성"));
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId("folder")
+          .setLabel(L("New folder name", "새 폴더 이름"))
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setPlaceholder(L("my-new-project", "my-new-project")),
+      ),
+    );
+    await interaction.showModal(modal);
     return;
   }
 
@@ -204,7 +300,7 @@ export async function handleButtonInteraction(
       content: L(`Thread created: <#${thread.id}>`, `스레드 생성됨: <#${thread.id}>`),
       components: [],
     });
-    await thread.send(
+    const starter = await thread.send(
       [
         L(`Starting new topic:\n> ${pending.prompt}`, `새 주제를 시작합니다:\n> ${pending.prompt}`),
         buildSkillIntro(selectedSkills),
@@ -215,6 +311,7 @@ export async function handleButtonInteraction(
       scopeId: thread.id,
       projectChannelId: channelId,
       topic: title,
+      sourceMessageId: starter.id,
     });
     return;
   }
@@ -253,7 +350,7 @@ export async function handleButtonInteraction(
       content: L(`Continuing in <#${threadChannel.id}>`, `<#${threadChannel.id}> 에서 이어갑니다.`),
       components: [],
     });
-    await threadChannel.send(
+    const continuation = await threadChannel.send(
       [
         L(`Continuing topic:\n> ${pending.prompt}`, `주제를 이어갑니다:\n> ${pending.prompt}`),
         buildSkillIntro(selectedSkills),
@@ -263,6 +360,7 @@ export async function handleButtonInteraction(
       scopeId: threadChannel.id,
       projectChannelId: channelId,
       topic: latest?.topic ?? threadChannel.name,
+      sourceMessageId: continuation.id,
     });
     return;
   }
@@ -716,4 +814,55 @@ export async function handleSelectMenuInteraction(
     ],
     components: [row],
   });
+}
+
+export async function handleModalSubmitInteraction(
+  interaction: ModalSubmitInteraction,
+): Promise<void> {
+  if (!isAllowedUser(interaction.user.id)) {
+    await interaction.reply({
+      content: L("You are not authorized.", "권한이 없습니다."),
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (interaction.customId === "project-search-modal") {
+    const query = interaction.fields.getTextInputValue("query");
+    setPickerQuery(interaction.channelId, query);
+    if ("message" in interaction && interaction.message && "edit" in interaction.message) {
+      await interaction.message.edit(buildProjectPickerView(interaction.channelId));
+    }
+    await interaction.reply({
+      content: query
+        ? L(`Search applied: \`${query}\``, `검색 적용: \`${query}\``)
+        : L("Search cleared.", "검색이 해제되었습니다."),
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (interaction.customId === "project-create-modal") {
+    const folderName = interaction.fields.getTextInputValue("folder");
+    const result = createPickerFolder(interaction.channelId, folderName);
+    if (!result.ok) {
+      const msg = result.error === "exists"
+        ? L("Folder already exists.", "이미 존재하는 폴더입니다.")
+        : result.error === "invalid"
+        ? L("Invalid folder name.", "유효하지 않은 폴더 이름입니다.")
+        : L("Folder name is required.", "폴더 이름이 필요합니다.");
+      await interaction.reply({ content: msg, ephemeral: true });
+      return;
+    }
+
+    setPickerDir(interaction.channelId, result.path!);
+    if ("message" in interaction && interaction.message && "edit" in interaction.message) {
+      await interaction.message.edit(buildProjectPickerView(interaction.channelId));
+    }
+    await interaction.reply({
+      content: L(`Created folder: \`${result.path}\``, `폴더 생성됨: \`${result.path}\``),
+      ephemeral: true,
+    });
+    return;
+  }
 }

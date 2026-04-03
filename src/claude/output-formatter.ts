@@ -259,23 +259,32 @@ export function createResultEmbed(
   statusLine?: string | null,
 ): EmbedBuilder {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
-  const parts: string[] = [];
-  if (showCost) parts.push(`${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}`);
-  parts.push(`${L("Duration", "소요 시간")} : ${duration}`);
-  if (usageSummary) parts.push(`${L("Usage", "사용량")} : ${usageSummary}`);
-  if (contextSummary) parts.push(`${L("Context", "컨텍스트")} : ${contextSummary}`);
-  const footer = parts.join(" • ");
 
   let description = result.slice(0, 4000);
   if (statusLine) {
-    description = `${description}\n\n\`${statusLine}\``.slice(0, 4000);
+    description = `${description}\n\n\`${statusLine}\``;
   }
+
+  const detailLines: string[] = [];
+  if (usageSummary) {
+    detailLines.push(...usageSummary.split(" | "));
+  }
+  if (contextSummary) {
+    detailLines.push(`${L("Context", "컨텍스트")} : ${contextSummary}`);
+  }
+  detailLines.push(`${L("Duration", "소요 시간")} : ${duration}`);
+  if (showCost) {
+    detailLines.push(`${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}`);
+  }
+  if (detailLines.length > 0) {
+    description = `${description}\n${detailLines.join("\n")}`;
+  }
+  description = description.slice(0, 4000);
 
   const embed = new EmbedBuilder()
     .setTitle(L("✅ Task Complete", "✅ 작업 완료"))
     .setDescription(description)
     .setColor(0x00ff00)
-    .setFooter({ text: footer })
     .setTimestamp();
 
   return embed;

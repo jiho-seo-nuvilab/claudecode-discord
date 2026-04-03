@@ -28,7 +28,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (subcommand !== "add") return;
 
   const existing = getProject(interaction.channelId);
-  const { rootDir, currentDir, options } = listPickerOptions(interaction.channelId);
+  const { rootDir, currentDir, options, page, totalPages, totalMatches, query } = listPickerOptions(interaction.channelId);
   setPickerDir(interaction.channelId, currentDir);
 
   if (options.length === 0) {
@@ -62,12 +62,12 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
         title: L("Project Picker", "프로젝트 선택"),
         description: existing
           ? L(
-            `Current project: \`${existing.project_path}\`\n\nBrowsing: \`${currentDir}\`\nRoot: \`${rootDir}\``,
-            `현재 프로젝트: \`${existing.project_path}\`\n\n현재 탐색 경로: \`${currentDir}\`\n루트: \`${rootDir}\``,
+            `Current project: \`${existing.project_path}\`\n\nBrowsing: \`${currentDir}\`\nRoot: \`${rootDir}\`\nMatches: ${totalMatches} · Page ${page + 1}/${totalPages}${query ? `\nSearch: \`${query}\`` : ""}`,
+            `현재 프로젝트: \`${existing.project_path}\`\n\n현재 탐색 경로: \`${currentDir}\`\n루트: \`${rootDir}\`\n결과: ${totalMatches} · 페이지 ${page + 1}/${totalPages}${query ? `\n검색: \`${query}\`` : ""}`,
           )
           : L(
-            `Select a project under \`${currentDir}\`.\nRoot: \`${rootDir}\``,
-            `\`${currentDir}\` 아래 프로젝트를 선택하세요.\n루트: \`${rootDir}\``,
+            `Select a project under \`${currentDir}\`.\nRoot: \`${rootDir}\`\nMatches: ${totalMatches} · Page ${page + 1}/${totalPages}${query ? `\nSearch: \`${query}\`` : ""}`,
+            `\`${currentDir}\` 아래 프로젝트를 선택하세요.\n루트: \`${rootDir}\`\n결과: ${totalMatches} · 페이지 ${page + 1}/${totalPages}${query ? `\n검색: \`${query}\`` : ""}`,
           ),
         color: 0x5865f2,
         fields: [
@@ -81,7 +81,35 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     ],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(up, refresh),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        up,
+        new ButtonBuilder()
+          .setCustomId("project-prev:_")
+          .setLabel(L("Prev", "이전"))
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page === 0),
+        new ButtonBuilder()
+          .setCustomId("project-next:_")
+          .setLabel(L("Next", "다음"))
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page >= totalPages - 1),
+        refresh,
+      ),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId("project-search:_")
+          .setLabel(L("Search", "검색"))
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("project-clear-search:_")
+          .setLabel(L("Clear Search", "검색 해제"))
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(!query),
+        new ButtonBuilder()
+          .setCustomId("project-create:_")
+          .setLabel(L("New Folder", "새 폴더"))
+          .setStyle(ButtonStyle.Success),
+      ),
     ],
   });
 }
