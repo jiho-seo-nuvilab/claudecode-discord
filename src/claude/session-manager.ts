@@ -1,7 +1,7 @@
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { MessageCreateOptions, MessageEditOptions, TextChannel } from "discord.js";
+import type { MessageCreateOptions, TextChannel } from "discord.js";
 import {
   upsertSession,
   updateSessionStatus,
@@ -22,8 +22,8 @@ import {
   formatStreamChunk,
   type AskQuestionData,
 } from "./output-formatter.js";
-import { getUsageSummaryLine, getUsageSnapshot } from "../bot/commands/usage.js";
-import { buildDefaultOpsHint, buildSkillIntro } from "../utils/skills.js";
+import { getUsageSummaryLine } from "../bot/commands/usage.js";
+import { buildDefaultOpsHint, buildLocaleResponseHint, buildSkillIntro } from "../utils/skills.js";
 
 interface ActiveSession {
   queryInstance: Query;
@@ -91,14 +91,21 @@ class SessionManager {
     const dbSession = !existingSession
       ? (scopeId === projectChannelId ? getSession(projectChannelId) : getThreadSession(scopeId))
       : undefined;
-    const dbId = existingSession?.dbId ?? dbSession?.id ?? randomUUID();
+    const persistedDbId = dbSession && "id" in dbSession ? dbSession.id : undefined;
+    const dbId = existingSession?.dbId ?? persistedDbId ?? randomUUID();
     const loadedResumeSessionId = existingSession?.sessionId ?? dbSession?.session_id ?? undefined;
+    const forcedFreshNext = this.forceFreshNext.has(scopeId);
     const forcedUltraFast = this.forceUltraFastNext.has(scopeId);
-    const shouldForceFresh = this.forceFreshNext.has(scopeId) || Boolean(options?.preferFreshSession) || forcedUltraFast;
+    const hasSavedSession = Boolean(loadedResumeSessionId);
+    const shouldForceFresh = Boolean(options?.preferFreshSession)
+      || (!hasSavedSession && (forcedFreshNext || forcedUltraFast));
+    const useUltraFastMode = Boolean(options?.preferUltraFast)
+      || (!hasSavedSession && forcedUltraFast);
     const resumeSessionId = shouldForceFresh ? undefined : loadedResumeSessionId;
     if (shouldForceFresh) this.forceFreshNext.delete(scopeId);
     if (forcedUltraFast) this.forceUltraFastNext.delete(scopeId);
-    const topic = options?.topic ?? existingSession?.topic ?? dbSession?.topic ?? null;
+    const persistedTopic = dbSession && "topic" in dbSession ? dbSession.topic : null;
+    const topic = options?.topic ?? existingSession?.topic ?? persistedTopic ?? null;
     const sourceMessageId = options?.sourceMessageId;
     const sessionMode = loadedResumeSessionId
       ? L("Resumed", "이어쓰기")
@@ -214,6 +221,31 @@ class SessionManager {
       return L(`Using tool: ${toolName}`, `도구 사용: ${toolName}`);
     };
 
+    const describeSystemStep = (subtype: string, message: Record<string, unknown>): string | null => {
+      const detail = [
+        typeof message.message === "string" ? message.message : null,
+        typeof message.detail === "string" ? message.detail : null,
+        typeof message.status === "string" ? message.status : null,
+      ].find((value) => value && value.trim().length > 0) ?? null;
+
+      if (subtype === "task_progress") {
+        return detail
+          ? L(`Progress: ${detail}`, `진행 중: ${detail}`)
+          : L("Working through the task", "작업 단계를 진행 중");
+      }
+      if (subtype === "task_notification") {
+        return detail
+          ? L(`Update: ${detail}`, `업데이트: ${detail}`)
+          : L("Task update received", "작업 업데이트 수신");
+      }
+      if (subtype === "init") {
+        return null;
+      }
+      return detail
+        ? L(`${subtype}: ${detail}`, `${subtype}: ${detail}`)
+        : `system:${subtype}`;
+    };
+
     const updateProgress = async (force = false): Promise<void> => {
       const now = Date.now();
       if (!force && now - lastProgressEditTime < PROGRESS_EDIT_INTERVAL) return;
@@ -227,6 +259,7 @@ class SessionManager {
         `• ${L("Session", "세션")}: ${sessionMode}`,
         `• ${L("Status", "상태")}: ${lastActivity}`,
         `• ${L("Tools", "도구")}: ${toolUseCount}`,
+        `• ${L("Current", "현재 단계")}: ${progressDetail}`,
       ];
       if (recent.length > 0) {
         lines.push(`• ${L("Process", "과정 누적")}:`);
@@ -266,17 +299,16 @@ class SessionManager {
 
     try {
       await updateProgress(true);
-      const promptWithContext = !resumeSessionId && scopeId !== projectChannelId
-        ? [
-            buildSkillIntro(selectedSkills),
-            buildDefaultOpsHint(),
-            prompt,
-          ].filter(Boolean).join("\n\n")
-        : prompt;
+      const promptWithContext = [
+        buildLocaleResponseHint(),
+        !resumeSessionId && scopeId !== projectChannelId ? buildSkillIntro(selectedSkills) : null,
+        !resumeSessionId && scopeId !== projectChannelId ? buildDefaultOpsHint() : null,
+        prompt,
+      ].filter(Boolean).join("\n\n");
       if (options?.preferFreshSession) {
         logStepIfChanged(L("Fast path enabled for short prompt", "짧은 요청용 빠른 경로 사용"));
       }
-      if (options?.preferUltraFast || forcedUltraFast) {
+      if (useUltraFastMode) {
         logStepIfChanged(L("Ultra-fast mode enabled", "초고속 모드 사용"));
       }
       progressDetail = L("Request sent, waiting first response", "요청 전송됨, 첫 응답 대기 중");
@@ -284,7 +316,7 @@ class SessionManager {
 
       const globalModel = getGlobalModel();
       const effectiveModel = dbSession?.model ?? project.model ?? globalModel ?? undefined;
-      const ultraFastModel = (options?.preferUltraFast || forcedUltraFast)
+      const ultraFastModel = useUltraFastMode
         ? (effectiveModel && effectiveModel !== "default" ? effectiveModel : "haiku")
         : effectiveModel;
 
@@ -298,7 +330,7 @@ class SessionManager {
           },
           settingSources: [],
           ...(ultraFastModel ? { model: ultraFastModel } : {}),
-          ...((options?.preferUltraFast || forcedUltraFast) ? { maxTurns: 1, promptSuggestions: false, agentProgressSummaries: false } : {}),
+          ...(useUltraFastMode ? { maxTurns: 1, promptSuggestions: false, agentProgressSummaries: false } : {}),
           env: {
             ...process.env,
             ANTHROPIC_API_KEY: undefined,
@@ -473,8 +505,11 @@ class SessionManager {
             lastStreamEventLabel = `system:${subtype}`;
             const noisy = ["hook_started", "hook_response", "status", "user"];
             if (!noisy.includes(subtype)) {
-              progressDetail = `system:${subtype}`;
-              logStepIfChanged(progressDetail);
+              const systemStep = describeSystemStep(subtype, message as Record<string, unknown>);
+              if (systemStep) {
+                progressDetail = systemStep;
+                logStepIfChanged(systemStep);
+              }
             }
             if (subtype === "compact_boundary") {
               this.forceFreshNext.add(scopeId);
@@ -656,9 +691,11 @@ class SessionManager {
               const recent = activityLog.slice(-8);
               for (const item of recent) doneLines.push(`• ${item}`);
             }
-            await progressMessage.edit({ content: doneLines.join("\n") }).catch(() => {});
+            doneLines.push(`• ${L("Last event", "마지막 이벤트")}: ${lastStreamEventLabel}`);
+            const doneProgressMessage = progressMessage as { edit: (v: any) => Promise<any>; delete?: () => Promise<any> } | null;
+            await doneProgressMessage?.edit({ content: doneLines.join("\n") }).catch(() => {});
             setTimeout(() => {
-              progressMessage?.delete?.().catch(() => {});
+              doneProgressMessage?.delete?.().catch(() => {});
             }, 10_000);
           }
 

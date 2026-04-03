@@ -10,7 +10,8 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  type InteractionReplyOptions,
+  type InteractionUpdateOptions,
+  type MessageEditOptions,
 } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -44,7 +45,7 @@ import {
   setPickerQuery,
 } from "../project-picker.js";
 
-function buildProjectPickerView(channelId: string): InteractionReplyOptions {
+function buildProjectPickerView(channelId: string): InteractionUpdateOptions {
   const existing = getProject(channelId);
   const { rootDir, currentDir, options, page, totalPages, totalMatches, query } = listPickerOptions(channelId);
 
@@ -828,10 +829,18 @@ export async function handleModalSubmitInteraction(
   }
 
   if (interaction.customId === "project-search-modal") {
+    const channelId = interaction.channelId;
+    if (!channelId) {
+      await interaction.reply({
+        content: L("Channel context is unavailable.", "채널 정보를 찾을 수 없습니다."),
+        ephemeral: true,
+      });
+      return;
+    }
     const query = interaction.fields.getTextInputValue("query");
-    setPickerQuery(interaction.channelId, query);
+    setPickerQuery(channelId, query);
     if ("message" in interaction && interaction.message && "edit" in interaction.message) {
-      await interaction.message.edit(buildProjectPickerView(interaction.channelId));
+      await interaction.message.edit(buildProjectPickerView(channelId) as MessageEditOptions);
     }
     await interaction.reply({
       content: query
@@ -843,8 +852,16 @@ export async function handleModalSubmitInteraction(
   }
 
   if (interaction.customId === "project-create-modal") {
+    const channelId = interaction.channelId;
+    if (!channelId) {
+      await interaction.reply({
+        content: L("Channel context is unavailable.", "채널 정보를 찾을 수 없습니다."),
+        ephemeral: true,
+      });
+      return;
+    }
     const folderName = interaction.fields.getTextInputValue("folder");
-    const result = createPickerFolder(interaction.channelId, folderName);
+    const result = createPickerFolder(channelId, folderName);
     if (!result.ok) {
       const msg = result.error === "exists"
         ? L("Folder already exists.", "이미 존재하는 폴더입니다.")
@@ -855,9 +872,9 @@ export async function handleModalSubmitInteraction(
       return;
     }
 
-    setPickerDir(interaction.channelId, result.path!);
+    setPickerDir(channelId, result.path!);
     if ("message" in interaction && interaction.message && "edit" in interaction.message) {
-      await interaction.message.edit(buildProjectPickerView(interaction.channelId));
+      await interaction.message.edit(buildProjectPickerView(channelId) as MessageEditOptions);
     }
     await interaction.reply({
       content: L(`Created folder: \`${result.path}\``, `폴더 생성됨: \`${result.path}\``),

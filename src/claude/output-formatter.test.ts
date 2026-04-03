@@ -182,15 +182,15 @@ describe("createToolApprovalEmbed", () => {
 // ─── createResultEmbed ───
 
 describe("createResultEmbed", () => {
-  it("shows cost and duration in description when showCost is true", () => {
+  it("never shows cost in description", () => {
     const embed = createResultEmbed("Done", 0.0123, 5000, true);
     const description = embed.data.description ?? "";
-    expect(description).toContain("Cost");
-    expect(description).toContain("$0.0123");
+    expect(description).not.toContain("Cost");
+    expect(description).not.toContain("$0.0123");
     expect(description).toContain("Duration : 5.0s");
   });
 
-  it("hides cost when showCost is false", () => {
+  it("still keeps duration when showCost is false", () => {
     const embed = createResultEmbed("Done", 0.0123, 5000, false);
     const description = embed.data.description ?? "";
     expect(description).not.toContain("Cost");

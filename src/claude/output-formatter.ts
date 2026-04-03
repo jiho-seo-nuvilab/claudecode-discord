@@ -251,9 +251,9 @@ export function createAskUserQuestionEmbed(
 
 export function createResultEmbed(
   result: string,
-  costUsd: number,
+  _costUsd: number,
   durationMs: number,
-  showCost: boolean = true,
+  _showCost: boolean = true,
   usageSummary?: string | null,
   contextSummary?: string | null,
   statusLine?: string | null,
@@ -273,9 +273,6 @@ export function createResultEmbed(
     detailLines.push(`${L("Context", "컨텍스트")} : ${contextSummary}`);
   }
   detailLines.push(`${L("Duration", "소요 시간")} : ${duration}`);
-  if (showCost) {
-    detailLines.push(`${L("Cost (est.)", "비용 (추정)")} : $${costUsd.toFixed(4)}`);
-  }
   if (detailLines.length > 0) {
     description = `${description}\n${detailLines.join("\n")}`;
   }

@@ -1,16 +1,42 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const {
+  queryMock,
+  getProjectMock,
+  getSessionMock,
+  getThreadSessionMock,
+  upsertSessionMock,
+  upsertThreadSessionMock,
+  updateSessionStatusMock,
+  updateThreadSessionStatusMock,
+  setAutoApproveMock,
+} = vi.hoisted(() => ({
+  queryMock: vi.fn(),
+  getProjectMock: vi.fn(),
+  getSessionMock: vi.fn(),
+  getThreadSessionMock: vi.fn(),
+  upsertSessionMock: vi.fn(),
+  upsertThreadSessionMock: vi.fn(),
+  updateSessionStatusMock: vi.fn(),
+  updateThreadSessionStatusMock: vi.fn(),
+  setAutoApproveMock: vi.fn(),
+}));
+
 // Mock all external dependencies before importing session-manager
 vi.mock("../utils/i18n.js", () => ({
   L: (en: string, _kr: string) => en,
 }));
 
 vi.mock("../db/database.js", () => ({
-  upsertSession: vi.fn(),
-  updateSessionStatus: vi.fn(),
-  getProject: vi.fn(),
-  getSession: vi.fn(),
-  setAutoApprove: vi.fn(),
+  upsertSession: upsertSessionMock,
+  updateSessionStatus: updateSessionStatusMock,
+  getProject: getProjectMock,
+  getSession: getSessionMock,
+  setAutoApprove: setAutoApproveMock,
+  getThreadSession: getThreadSessionMock,
+  upsertThreadSession: upsertThreadSessionMock,
+  updateThreadSessionStatus: updateThreadSessionStatusMock,
+  getGlobalModel: vi.fn(() => null),
 }));
 
 vi.mock("../utils/config.js", () => ({
@@ -18,19 +44,77 @@ vi.mock("../utils/config.js", () => ({
 }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
-  query: vi.fn(),
+  query: queryMock,
+}));
+
+vi.mock("../bot/commands/usage.js", () => ({
+  getUsageSummaryLine: vi.fn(async () => "usage"),
+  getUsageSnapshot: vi.fn(),
+}));
+
+vi.mock("../utils/skills.js", () => ({
+  buildDefaultOpsHint: vi.fn(() => ""),
+  buildLocaleResponseHint: vi.fn(() => "Reply in English unless the user explicitly asks for another language."),
+  buildSkillIntro: vi.fn(() => ""),
+}));
+
+vi.mock("./output-formatter.js", () => ({
+  createToolApprovalEmbed: vi.fn(() => ({ embed: {}, row: {} })),
+  createAskUserQuestionEmbed: vi.fn(() => ({ embed: {}, components: [] })),
+  createResultEmbed: vi.fn(() => ({ title: "done" })),
+  formatStreamChunk: vi.fn((text: string) => text),
 }));
 
 import { sessionManager } from "./session-manager.js";
 
 // Helper to create a mock TextChannel
 function mockChannel(id: string) {
-  return { id, send: vi.fn().mockResolvedValue({ edit: vi.fn() }) } as any;
+  return {
+    id,
+    send: vi.fn().mockResolvedValue({ edit: vi.fn(), delete: vi.fn() }),
+    sendTyping: vi.fn().mockResolvedValue(undefined),
+  } as any;
+}
+
+function makeQueryEvents(sessionId = "sdk-session") {
+  return (async function* () {
+    yield { type: "system", subtype: "init", session_id: sessionId };
+    yield {
+      type: "assistant",
+      content: [{ text: "ok" }],
+      message: { usage: { input_tokens: 123 } },
+    };
+    yield { result: "Task completed", total_cost_usd: 0, duration_ms: 1 };
+  })();
 }
 
 describe("SessionManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getProjectMock.mockReturnValue({
+      channel_id: "project-channel",
+      project_path: "/tmp/project",
+      guild_id: "guild-1",
+      auto_approve: 0,
+      model: null,
+      skills: null,
+      created_at: "now",
+    });
+    getSessionMock.mockReturnValue(undefined);
+    getThreadSessionMock.mockReturnValue(undefined);
+    queryMock.mockImplementation(() => {
+      const iterator = makeQueryEvents();
+      return {
+        ...iterator,
+        interrupt: vi.fn(),
+        [Symbol.asyncIterator]: iterator[Symbol.asyncIterator].bind(iterator),
+      };
+    });
+    (sessionManager as any).sessions.clear();
+    (sessionManager as any).messageQueue.clear();
+    (sessionManager as any).pendingQueuePrompts.clear();
+    (sessionManager as any).forceFreshNext.clear();
+    (sessionManager as any).forceUltraFastNext.clear();
   });
 
   // ─── isActive ───
@@ -140,6 +224,173 @@ describe("SessionManager", () => {
   describe("stopSession", () => {
     it("returns false for inactive session", async () => {
       expect(await sessionManager.stopSession("no-session")).toBe(false);
+    });
+  });
+
+  describe("session continuity", () => {
+    it("keeps resume session when forceFreshNext is set but a saved thread session exists", async () => {
+      const channel = mockChannel("thread-1");
+      getThreadSessionMock.mockReturnValue({
+        thread_id: "thread-1",
+        parent_channel_id: "project-channel",
+        session_id: "saved-session-123",
+        status: "idle",
+        topic: "topic",
+        model: null,
+        last_activity: "now",
+        created_at: "now",
+      });
+      (sessionManager as any).forceFreshNext.add("thread-1");
+
+      await sessionManager.sendMessage(channel, "continue", {
+        scopeId: "thread-1",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArgs = queryMock.mock.calls[0][0];
+      expect(queryArgs.options.resume).toBe("saved-session-123");
+    });
+
+    it("does not apply ultra-fast query settings when resuming a saved session", async () => {
+      const channel = mockChannel("thread-3");
+      getThreadSessionMock.mockReturnValue({
+        thread_id: "thread-3",
+        parent_channel_id: "project-channel",
+        session_id: "saved-session-456",
+        status: "idle",
+        topic: "topic",
+        model: null,
+        last_activity: "now",
+        created_at: "now",
+      });
+      (sessionManager as any).forceUltraFastNext.add("thread-3");
+
+      await sessionManager.sendMessage(channel, "continue", {
+        scopeId: "thread-3",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArgs = queryMock.mock.calls[0][0];
+      expect(queryArgs.options.resume).toBe("saved-session-456");
+      expect(queryArgs.options.maxTurns).toBeUndefined();
+      expect(queryArgs.options.model).toBeUndefined();
+    });
+
+    it("still starts fresh when no saved session exists and forceFreshNext is set", async () => {
+      const channel = mockChannel("thread-2");
+      (sessionManager as any).forceFreshNext.add("thread-2");
+
+      await sessionManager.sendMessage(channel, "continue", {
+        scopeId: "thread-2",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArgs = queryMock.mock.calls[0][0];
+      expect(queryArgs.options.resume).toBeUndefined();
+    });
+
+    it("keeps ultra-fast retry behavior when no saved session exists", async () => {
+      const channel = mockChannel("thread-4");
+      (sessionManager as any).forceUltraFastNext.add("thread-4");
+
+      await sessionManager.sendMessage(channel, "continue", {
+        scopeId: "thread-4",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArgs = queryMock.mock.calls[0][0];
+      expect(queryArgs.options.resume).toBeUndefined();
+      expect(queryArgs.options.maxTurns).toBe(1);
+      expect(queryArgs.options.model).toBe("haiku");
+    });
+
+    it("keeps resume continuity for queued follow-up in same thread", async () => {
+      const channel = mockChannel("thread-queue");
+      getThreadSessionMock.mockReturnValue({
+        thread_id: "thread-queue",
+        parent_channel_id: "project-channel",
+        session_id: "saved-session-queue",
+        status: "idle",
+        topic: "topic",
+        model: null,
+        last_activity: "now",
+        created_at: "now",
+      });
+
+      (sessionManager as any).forceFreshNext.add("thread-queue");
+      sessionManager.enqueueMessage("thread-queue", channel, "follow-up queued");
+
+      await sessionManager.sendMessage(channel, "start", {
+        scopeId: "thread-queue",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(queryMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      const secondQueryArgs = queryMock.mock.calls[1][0];
+      expect(secondQueryArgs.options.resume).toBe("saved-session-queue");
+    });
+
+    it("always prepends a locale response hint to the outgoing prompt", async () => {
+      const channel = mockChannel("thread-locale");
+
+      await sessionManager.sendMessage(channel, "안녕", {
+        scopeId: "thread-locale",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArgs = queryMock.mock.calls[0][0];
+      expect(queryArgs.prompt).toContain("Reply in English unless the user explicitly asks for another language.");
+      expect(queryArgs.prompt).toContain("안녕");
+    });
+
+    it("shows human-readable current progress details for system progress events", async () => {
+      const progressHandle = { edit: vi.fn().mockResolvedValue(undefined), delete: vi.fn().mockResolvedValue(undefined) };
+      const channel = {
+        id: "thread-progress",
+        send: vi.fn().mockResolvedValue(progressHandle),
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      queryMock.mockImplementationOnce(() => {
+        const iterator = (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-session" };
+          await new Promise((resolve) => setTimeout(resolve, 1300));
+          yield { type: "system", subtype: "task_progress", message: "Analyzing logs" };
+          await new Promise((resolve) => setTimeout(resolve, 1300));
+          yield { result: "Task completed", total_cost_usd: 0, duration_ms: 1 };
+        })();
+        return {
+          ...iterator,
+          interrupt: vi.fn(),
+          [Symbol.asyncIterator]: iterator[Symbol.asyncIterator].bind(iterator),
+        };
+      });
+
+      await sessionManager.sendMessage(channel, "check progress", {
+        scopeId: "thread-progress",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      const editedBodies = (progressHandle.edit.mock.calls as unknown[][])
+        .map((call: unknown[]) => call[0])
+        .filter((payload: unknown): payload is { content: string } => {
+          return typeof payload === "object" && payload !== null && "content" in payload;
+        })
+        .map((payload) => payload.content);
+      expect(editedBodies.some((body) => body.includes("Analyzing logs"))).toBe(true);
     });
   });
 });

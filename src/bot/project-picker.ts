@@ -22,14 +22,14 @@ function ensureWithinRoot(root: string, candidate: string): string {
   return resolvedRoot;
 }
 
-function getDefaultState(channelId: string): PickerState {
+function getDefaultState(): PickerState {
   return { dir: getPickerRootDir(), query: "", page: 0 };
 }
 
 function getState(channelId: string): PickerState {
   const current = pickerState.get(channelId);
   if (current) return current;
-  const next = getDefaultState(channelId);
+  const next = getDefaultState();
   pickerState.set(channelId, next);
   return next;
 }

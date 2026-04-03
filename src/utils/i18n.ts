@@ -9,7 +9,7 @@ const LANG_FILE = path.join(__dirname, "..", ".tray-lang");
 
 /**
  * Read the current language preference from .tray-lang file.
- * Returns "en" (default) or "kr".
+ * Returns "kr" (default) or "en".
  * Reads fresh from disk on each call so tray app changes take effect immediately.
  */
 function getCurrentLang(): "en" | "kr" {
@@ -17,7 +17,7 @@ function getCurrentLang(): "en" | "kr" {
     const content = fs.readFileSync(LANG_FILE, "utf-8").trim();
     return content === "kr" ? "kr" : "en";
   } catch {
-    return "en";
+    return "kr";
   }
 }
 

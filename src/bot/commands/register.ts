@@ -36,7 +36,6 @@ export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const input = interaction.options.getString("path", true);
-  const config = getConfig();
   const baseDir = getRegisterBaseDir();
   // If input is absolute path, use as-is; otherwise join with base dir
   const projectPath = path.isAbsolute(input)

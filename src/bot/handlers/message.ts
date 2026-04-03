@@ -1,5 +1,5 @@
 import { Message, TextChannel, Attachment, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } from "discord.js";
-import { getProject, getLatestThreadSession, getThreadSession } from "../../db/database.js";
+import { getProject, getLatestThreadSession, getSession, getThreadSession } from "../../db/database.js";
 import { isAllowedUser, checkRateLimit } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { setPendingRootPrompt } from "../thread-router.js";
@@ -59,6 +59,15 @@ export function shouldUseUltraFastMode(prompt: string, hasAttachments: boolean):
   ]);
 
   return ultraFastPrompts.has(normalized);
+}
+
+export function hasStoredSessionContext(
+  isThread: boolean,
+  scopeId: string,
+  projectChannelId: string,
+): boolean {
+  const session = isThread ? getThreadSession(scopeId) : getSession(projectChannelId);
+  return Boolean(session?.session_id);
 }
 
 async function downloadAttachment(
@@ -171,12 +180,11 @@ export async function handleMessage(message: Message): Promise<void> {
 
   if (!prompt) return;
   const hasAttachments = imagePaths.length > 0 || filePaths.length > 0;
-  const existingThreadSession = isThread ? getThreadSession(scopeId) : null;
-  const hasExistingThreadContext = Boolean(existingThreadSession?.session_id);
-  const preferFreshSession = hasExistingThreadContext
+  const hasExistingContext = hasStoredSessionContext(isThread, scopeId, projectChannelId);
+  const preferFreshSession = hasExistingContext
     ? false
     : shouldPreferFreshSession(message.content.trim(), hasAttachments);
-  const preferUltraFast = hasExistingThreadContext
+  const preferUltraFast = hasExistingContext
     ? false
     : shouldUseUltraFastMode(message.content.trim(), hasAttachments);
 

@@ -1,7 +1,41 @@
-import { describe, expect, it } from "vitest";
-import { shouldPreferFreshSession, shouldUseUltraFastMode } from "./message.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { getSessionMock, getThreadSessionMock } = vi.hoisted(() => ({
+  getSessionMock: vi.fn(),
+  getThreadSessionMock: vi.fn(),
+}));
+
+vi.mock("../../db/database.js", () => ({
+  getProject: vi.fn(),
+  getLatestThreadSession: vi.fn(),
+  getSession: getSessionMock,
+  getThreadSession: getThreadSessionMock,
+}));
+
+vi.mock("../../security/guard.js", () => ({
+  isAllowedUser: vi.fn(),
+  checkRateLimit: vi.fn(),
+}));
+
+vi.mock("../../claude/session-manager.js", () => ({
+  sessionManager: {},
+}));
+
+vi.mock("../thread-router.js", () => ({
+  setPendingRootPrompt: vi.fn(),
+}));
+
+vi.mock("../../utils/i18n.js", () => ({
+  L: (en: string, _kr: string) => en,
+}));
+
+import { hasStoredSessionContext, shouldPreferFreshSession, shouldUseUltraFastMode } from "./message.js";
 
 describe("message fast-path heuristics", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("uses ultra-fast mode only for trivial greetings", () => {
     expect(shouldUseUltraFastMode("하이", false)).toBe(true);
     expect(shouldUseUltraFastMode("안녕?", false)).toBe(true);
@@ -22,5 +56,23 @@ describe("message fast-path heuristics", () => {
   it("disables fast-paths when attachments exist", () => {
     expect(shouldPreferFreshSession("하이", true)).toBe(false);
     expect(shouldUseUltraFastMode("하이", true)).toBe(false);
+  });
+
+  it("detects stored session context for root channels", () => {
+    getSessionMock.mockReturnValue({ session_id: "root-session-1" });
+
+    expect(hasStoredSessionContext(false, "channel-1", "channel-1")).toBe(true);
+  });
+
+  it("detects stored session context for threads", () => {
+    getThreadSessionMock.mockReturnValue({ session_id: "thread-session-1" });
+
+    expect(hasStoredSessionContext(true, "thread-1", "channel-1")).toBe(true);
+  });
+
+  it("returns false when no stored session exists", () => {
+    getSessionMock.mockReturnValue(undefined);
+
+    expect(hasStoredSessionContext(false, "channel-1", "channel-1")).toBe(false);
   });
 });
