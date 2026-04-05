@@ -1,5 +1,21 @@
 # CLAUDE.md
 
+## Global Operating Rules — Integrated Workflow Mode
+
+이 레포지토리에서는 프로젝트별 지침보다 먼저 아래 글로벌 운영 규칙을 따른다.
+
+- 모든 요청에서 먼저 사용자 의도를 파악한다.
+- 기본 워크플로우는 `bd + gsd + Serena` 조합이다.
+- 코드 이해가 필요하면 `Serena`를 먼저 사용한다.
+- 다단계 작업, 리팩터, 마이그레이션, 검증 중심 작업에는 `gsd`를 기본 적용한다.
+- 의미 있는 작업 진행과 완료 시 `bd` 상태 업데이트, 진행 저장, `bd sync`를 기본 적용한다.
+- 모든 응답은 기본적으로 한국어로 작성한다. 표준 English 기술 용어는 필요할 때만 섞는다.
+- 모든 응답 마지막에는 반드시 `[Reflection]`, `[Improvement]`, `[Next Step Suggestion]`을 포함한다.
+
+정본 포인터:
+- 글로벌 운영 원칙 요약: `AGENTS.md`
+- 프로젝트 상세 규칙 및 아키텍처: 이 `CLAUDE.md`
+
 이 파일은 Claude Code (claude.ai/code)가 이 레포지토리에서 작업할 때 참고하는 가이드입니다.
 
 ## 프로젝트 개요

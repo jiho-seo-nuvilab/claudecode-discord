@@ -30,7 +30,8 @@ export interface UsageSnapshot {
 }
 
 function compactBar(pct: number, width = 10): string {
-  const filled = Math.max(0, Math.min(width, Math.round((pct / 100) * width)));
+  const safePct = Number.isFinite(pct) ? pct : 0;
+  const filled = Math.max(0, Math.min(width, Math.round((safePct / 100) * width)));
   return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
 }
 
@@ -41,15 +42,18 @@ export async function getUsageSummaryLine(): Promise<string | null> {
   const parts: string[] = [];
   if (data.five_hour) {
     const pct = Math.round(data.five_hour.utilization);
-    parts.push(`5h ${compactBar(pct)} ${pct}%`);
+    const remaining = formatCompactRemaining(data.five_hour.resets_at);
+    parts.push(`5h ${compactBar(pct)} ${pct}%${remaining ? ` (${remaining})` : ""}`);
   }
   if (data.seven_day) {
     const pct = Math.round(data.seven_day.utilization);
-    parts.push(`7d ${compactBar(pct)} ${pct}%`);
+    const remaining = formatCompactRemaining(data.seven_day.resets_at);
+    parts.push(`7d ${compactBar(pct)} ${pct}%${remaining ? ` (${remaining})` : ""}`);
   }
   if (data.seven_day_sonnet) {
     const pct = Math.round(data.seven_day_sonnet.utilization);
-    parts.push(`Sonnet ${compactBar(pct)} ${pct}%`);
+    const remaining = formatCompactRemaining(data.seven_day_sonnet.resets_at);
+    parts.push(`Sonnet ${compactBar(pct)} ${pct}%${remaining ? ` (${remaining})` : ""}`);
   }
   return parts.length > 0 ? parts.join(" | ") : null;
 }
@@ -90,7 +94,8 @@ export async function getUsageSnapshot(): Promise<UsageSnapshot | null> {
 }
 
 function progressBar(pct: number, width = 12): string {
-  const filled = Math.round((pct / 100) * width);
+  const safePct = Number.isFinite(pct) ? pct : 0;
+  const filled = Math.max(0, Math.min(width, Math.round((safePct / 100) * width)));
   return "█".repeat(filled) + "░".repeat(width - filled);
 }
 

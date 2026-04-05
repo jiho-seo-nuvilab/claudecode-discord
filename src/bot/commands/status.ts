@@ -54,6 +54,43 @@ async function getContextEstimate(projectPath: string, sessionId: string | null 
   return `~${pct}% (${maxInputTokens.toLocaleString()} tok)`;
 }
 
+async function getSessionContinuity(projectPath: string, sessionId: string | null | undefined): Promise<string> {
+  if (!sessionId) return L("n/a", "없음");
+  const dir = findSessionDir(projectPath);
+  if (!dir) return L("n/a", "없음");
+  const filePath = path.join(dir, `${sessionId}.jsonl`);
+  if (!fs.existsSync(filePath)) return L("n/a", "없음");
+
+  const stream = fs.createReadStream(filePath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let sawCompactBoundary = false;
+  let sawInitWithSessionId = false;
+
+  for await (const line of rl) {
+    try {
+      const entry = JSON.parse(line) as {
+        type?: string;
+        subtype?: string;
+        session_id?: string;
+        message?: { subtype?: string; session_id?: string };
+      };
+      const subtype = entry.subtype ?? entry.message?.subtype;
+      if (entry.type === "system" && subtype === "compact_boundary") {
+        sawCompactBoundary = true;
+      }
+      if (entry.type === "system" && subtype === "init" && (entry.session_id || entry.message?.session_id)) {
+        sawInitWithSessionId = true;
+      }
+    } catch {
+      // ignore malformed lines
+    }
+  }
+
+  rl.close();
+  stream.destroy();
+  return `resume=${sawInitWithSessionId ? "yes" : "no"}, compacted=${sawCompactBoundary ? "yes" : "no"}`;
+}
+
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
@@ -103,6 +140,7 @@ export async function execute(
     const skills = project.skills ? project.skills.split(",").filter(Boolean).length : 0;
     const activeSessionId = latestThread?.session_id ?? session?.session_id;
     const contextEstimate = await getContextEstimate(project.project_path, activeSessionId);
+    const continuity = await getSessionContinuity(project.project_path, activeSessionId);
 
     embed.addFields({
       name: `${emoji} <#${project.channel_id}>`,
@@ -111,7 +149,8 @@ export async function execute(
         `${L("Status", "상태")}: **${status}**`,
         `${L("Auto-approve", "자동 승인")}: ${project.auto_approve ? L("On", "켜짐") : L("Off", "꺼짐")}`,
         `${L("Model", "모델")}: \`${effectiveModel}\` (${modelSource})`,
-        `${L("Context", "컨텍스트")}: ${contextEstimate}`,
+        `${L("Session continuity", "세션 연속성")}: ${continuity}`,
+        `${L("Active input estimate", "활성 입력 추정치")}: ${contextEstimate}`,
         `${L("Skills", "스킬")}: ${skills}`,
         `${L("Thread sessions", "스레드 세션")}: ${threadCount}`,
         `${L("Last topic", "마지막 주제")}: ${latestThread?.topic ?? L("none", "없음")}`,

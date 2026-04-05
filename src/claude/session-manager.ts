@@ -18,12 +18,56 @@ import { L } from "../utils/i18n.js";
 import {
   createToolApprovalEmbed,
   createAskUserQuestionEmbed,
-  createResultEmbed,
+  createProgressControls,
   formatStreamChunk,
+  splitMessage,
   type AskQuestionData,
 } from "./output-formatter.js";
+import { createProgressButtons } from "./progress-buttons.js";
+import { addImprovements, createCheckpoint } from "./checkpoints.js";
 import { getUsageSummaryLine } from "../bot/commands/usage.js";
-import { buildDefaultOpsHint, buildLocaleResponseHint, buildSkillIntro } from "../utils/skills.js";
+import { buildDefaultOpsHint, buildGlobalOpsPrompt, buildLocaleResponseHint, buildSkillIntro } from "../utils/skills.js";
+import { extractCodexAutoDecision } from "../utils/codex.js";
+
+function extractCheckpointInsights(resultText: string): string[] {
+  const lines = resultText.split(/\r?\n/).map((line) => line.trim());
+  const insights: string[] = [];
+  const seen = new Set<string>();
+
+  const push = (value: string): void => {
+    const cleaned = value.replace(/^[-*•]\s*/, "").trim();
+    if (!cleaned) return;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    insights.push(cleaned.length > 220 ? `${cleaned.slice(0, 220)}...` : cleaned);
+  };
+
+  const sectionHints = ["reflection", "improvement", "next step", "회고", "개선점", "다음단계", "다음 단계", "제안"];
+  let inHintSection = false;
+
+  for (const line of lines) {
+    if (!line) continue;
+    const lower = line.toLowerCase();
+    const isHeader = sectionHints.some((hint) => lower.includes(hint)) && /^[\[\]#*\sA-Za-z가-힣0-9:_-]+$/.test(line);
+    if (isHeader) {
+      inHintSection = true;
+      continue;
+    }
+    if (/^\[[^\]]+\]/.test(line) && !isHeader) {
+      inHintSection = false;
+      continue;
+    }
+    if (inHintSection) {
+      push(line);
+      continue;
+    }
+    if (/^(next|다음)\s*(step|단계)/i.test(line)) push(line);
+    if (/^(improvement|개선점)/i.test(line)) push(line);
+  }
+
+  return insights.slice(0, 8);
+}
 
 interface ActiveSession {
   queryInstance: Query;
@@ -32,6 +76,7 @@ interface ActiveSession {
   sessionId: string | null;
   dbId: string;
   topic: string | null;
+  stopped?: boolean;
 }
 
 type SessionStatus = "online" | "offline" | "waiting" | "idle";
@@ -61,6 +106,7 @@ class SessionManager {
   private pendingQueuePrompts = new Map<string, { channel: TextChannel; prompt: string; sourceMessageId?: string }>();
   private forceFreshNext = new Set<string>();
   private forceUltraFastNext = new Set<string>();
+  private scopeTokenWatermark = new Map<string, number>();
 
   private setStoredStatus(scopeId: string, projectChannelId: string, status: SessionStatus): void {
     if (scopeId === projectChannelId) {
@@ -104,6 +150,7 @@ class SessionManager {
     const resumeSessionId = shouldForceFresh ? undefined : loadedResumeSessionId;
     if (shouldForceFresh) this.forceFreshNext.delete(scopeId);
     if (forcedUltraFast) this.forceUltraFastNext.delete(scopeId);
+    if (shouldForceFresh) this.scopeTokenWatermark.delete(scopeId);
     const persistedTopic = dbSession && "topic" in dbSession ? dbSession.topic : null;
     const topic = options?.topic ?? existingSession?.topic ?? persistedTopic ?? null;
     const sourceMessageId = options?.sourceMessageId;
@@ -113,6 +160,8 @@ class SessionManager {
     const selectedSkills = project.skills
       ? project.skills.split(",").map((skill) => skill.trim()).filter(Boolean)
       : [];
+    const compactPrompt = prompt.replace(/\s+/g, " ").trim();
+    const promptPreview = compactPrompt.length > 140 ? `${compactPrompt.slice(0, 140)}…` : compactPrompt;
 
     const sendToChannel = async (payload: string | MessageCreateOptions): Promise<any> => {
       if (typeof payload === "string") {
@@ -147,8 +196,12 @@ class SessionManager {
     let lastEditTime = 0;
     let currentMessage: { edit: (v: any) => Promise<any> } | null = null;
     let progressMessage: { edit: (v: any) => Promise<any>; delete?: () => Promise<any> } | null = null;
-    const EDIT_INTERVAL = 1500;
-    const PROGRESS_EDIT_INTERVAL = 1200;
+    // Keep text stream updates responsive while adapting to Discord edit pressure.
+    const MIN_EDIT_INTERVAL = 250;
+    const MAX_EDIT_INTERVAL = 1200;
+    let editInterval = MIN_EDIT_INTERVAL;
+    let editSuccessStreak = 0;
+    const PROGRESS_EDIT_INTERVAL = 900;
     let lastProgressEditTime = 0;
     let streamEventCount = 0;
     let progressTick = 0;
@@ -161,17 +214,75 @@ class SessionManager {
     let toolUseCount = 0;
     let hasTextOutput = false;
     let hasResult = false;
-    let maxInputTokens = 0;
+    let sawCompactBoundary = false;
+    const previousTokenWatermark = resumeSessionId ? (this.scopeTokenWatermark.get(scopeId) ?? 0) : 0;
+    let maxInputTokens = previousTokenWatermark;
     const activityLog: string[] = [];
     let lastStreamEventLabel = L("none", "없음");
     let progressDetail = L("Preparing request", "요청 준비 중");
+    let latestDraftPreview: string | null = null;
+    let codexAutoDecision: { path: string; reason?: string; model?: string; next?: string } | null = null;
+    let codexAutoDecisionAnnounced = false;
     let lastLoggedStep = "";
     let lastGenericReasoningLogAt = 0;
+
+    const normalizeProgressEntry = (value: string): string => value
+      .replace(/\s+/g, " ")
+      .replace(/^•\s*/, "")
+      .trim()
+      .toLowerCase();
 
     const pushActivityLog = (entry: string): void => {
       if (!entry.trim()) return;
       activityLog.push(entry);
       if (activityLog.length > 12) activityLog.shift();
+    };
+
+    const isGenericFileEditEntry = (entry: string): boolean => (
+      /^Editing file `[^`]+`$/.test(entry) || /^파일 편집 중 `[^`]+`$/.test(entry)
+    );
+
+    const isSpecificFileEditEntry = (entry: string): boolean => (
+      (/^Editing .*[\\/].+/.test(entry) || /^.*[\\/].+ 수정 중$/.test(entry))
+      && !isGenericFileEditEntry(entry)
+    );
+
+    const getEntryBasename = (entry: string): string | null => {
+      const genericMatch = entry.match(/`([^`]+)`/);
+      if (genericMatch) return genericMatch[1];
+      const specificMatch = entry.match(/([A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)(?: 읽는 중| 수정 중)?$/);
+      return specificMatch?.[1] ?? null;
+    };
+
+    const isGenericCommandEntry = (entry: string): boolean => (
+      entry === L("Running command", "명령어 실행 중")
+      || entry === L("Running shell command", "쉘 명령 실행 중")
+    );
+
+    const isSpecificCommandEntry = (entry: string): boolean => (
+      entry.startsWith("Running command:")
+      || entry.startsWith("명령 실행:")
+    );
+
+    const isInternalSystemEntry = (entry: string): boolean => {
+      const normalized = normalizeProgressEntry(entry);
+      return normalized === "system:task_started" || normalized === "task_started";
+    };
+
+    const isRedundantStatus = (status: string, current: string): boolean => {
+      if (!status || !current) return false;
+      const normalizedStatus = normalizeProgressEntry(status);
+      const normalizedCurrent = normalizeProgressEntry(current);
+      if (normalizedStatus === normalizedCurrent) return true;
+
+      const statusBasename = getEntryBasename(status);
+      const currentBasename = getEntryBasename(current);
+      if (statusBasename && currentBasename && statusBasename === currentBasename) {
+        if (isGenericFileEditEntry(status) && isSpecificFileEditEntry(current)) return true;
+      }
+
+      if (isGenericCommandEntry(status) && isSpecificCommandEntry(current)) return true;
+      return false;
     };
 
     const logStepIfChanged = (step: string): void => {
@@ -187,6 +298,47 @@ class SessionManager {
       if (genericSteps.has(step)) lastGenericReasoningLogAt = now;
       lastLoggedStep = step;
       pushActivityLog(step);
+    };
+
+    const getDisplayActivityLog = (): string[] => {
+      const genericEntries = new Set([
+        L("Reasoning and planning", "추론 및 계획 중"),
+        L("Generating reply text", "답변 텍스트 생성 중"),
+        L("Session resumed", "세션 재개됨"),
+      ]);
+      const currentNormalized = normalizeProgressEntry(progressDetail);
+      const items = activityLog.slice(-10);
+      const hasSpecificCommand = items.some((item) => isSpecificCommandEntry(item));
+      const specificEditBasenames = new Set(
+        items
+          .filter((item) => isSpecificFileEditEntry(item))
+          .map((item) => getEntryBasename(item))
+          .filter((value): value is string => Boolean(value)),
+      );
+      const filtered: string[] = [];
+      const seen = new Set<string>();
+
+      for (const item of items) {
+        const normalized = normalizeProgressEntry(item);
+        if (!normalized) continue;
+        if (normalized === currentNormalized) continue;
+        if (seen.has(normalized)) continue;
+        if (isInternalSystemEntry(item)) continue;
+        if (isGenericCommandEntry(item) && hasSpecificCommand) continue;
+        if (isGenericFileEditEntry(item)) {
+          const basename = getEntryBasename(item);
+          if (basename && specificEditBasenames.has(basename)) continue;
+        }
+
+        const isGeneric = genericEntries.has(item);
+        const hasSpecificAlready = filtered.length > 0;
+        if (isGeneric && hasSpecificAlready) continue;
+
+        seen.add(normalized);
+        filtered.push(item);
+      }
+
+      return filtered.slice(-6);
     };
 
     const describeToolStep = (toolName: string, input: Record<string, unknown>): string => {
@@ -228,6 +380,9 @@ class SessionManager {
         typeof message.status === "string" ? message.status : null,
       ].find((value) => value && value.trim().length > 0) ?? null;
 
+      if (subtype === "task_started") {
+        return null;
+      }
       if (subtype === "task_progress") {
         return detail
           ? L(`Progress: ${detail}`, `진행 중: ${detail}`)
@@ -246,6 +401,20 @@ class SessionManager {
         : `system:${subtype}`;
     };
 
+    const tightenEditInterval = (): void => {
+      editSuccessStreak += 1;
+      if (editSuccessStreak < 4) return;
+      editSuccessStreak = 0;
+      if (editInterval > MIN_EDIT_INTERVAL) {
+        editInterval = Math.max(MIN_EDIT_INTERVAL, Math.floor(editInterval * 0.85));
+      }
+    };
+
+    const loosenEditInterval = (): void => {
+      editSuccessStreak = 0;
+      editInterval = Math.min(MAX_EDIT_INTERVAL, Math.ceil(editInterval * 1.6));
+    };
+
     const updateProgress = async (force = false): Promise<void> => {
       const now = Date.now();
       if (!force && now - lastProgressEditTime < PROGRESS_EDIT_INTERVAL) return;
@@ -254,15 +423,28 @@ class SessionManager {
       const elapsedSec = Math.max(1, Math.floor((now - startTime) / 1000));
       const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
       const spinner = spinnerFrames[progressTick % spinnerFrames.length];
-      const recent = activityLog.slice(-8);
+      const recent = getDisplayActivityLog();
+      const statusLine = isRedundantStatus(lastActivity, progressDetail)
+        ? L("Tool work in progress", "도구 작업 진행 중")
+        : lastActivity;
       const lines: string[] = [
         `• ${L("Session", "세션")}: ${sessionMode}`,
-        `• ${L("Status", "상태")}: ${lastActivity}`,
+        `• ${L("Request", "요청")}: ${promptPreview || L("No prompt preview", "요청 미리보기 없음")}`,
+        `• ${L("Status", "상태")}: ${statusLine}`,
         `• ${L("Tools", "도구")}: ${toolUseCount}`,
         `• ${L("Current", "현재 단계")}: ${progressDetail}`,
       ];
+      if (codexAutoDecision) {
+        const decisionModel = codexAutoDecision.model && codexAutoDecision.model !== "n/a"
+          ? ` (${codexAutoDecision.model})`
+          : "";
+        lines.push(`• ${L("Codex auto path", "Codex 자동 경로")}: ${codexAutoDecision.path}${decisionModel}`);
+      }
+      if (latestDraftPreview) {
+        lines.push(`• ${L("Latest draft", "최근 응답 초안")}: ${latestDraftPreview}`);
+      }
       if (recent.length > 0) {
-        lines.push(`• ${L("Process", "과정 누적")}:`);
+        lines.push(`• ${L("Recent steps", "최근 단계")}:`);
         for (const item of recent) lines.push(`• ${item}`);
       }
       if (hasTextOutput) {
@@ -271,11 +453,12 @@ class SessionManager {
       lines.push(`${spinner} ${L("In progress", "진행 중")} (${elapsedSec}s)`);
 
       const body = lines.join("\n");
+      const progressComponents = [createProgressControls(scopeId, this.getQueueSize(scopeId))];
       try {
         if (!progressMessage) {
-          progressMessage = await sendToChannel(body);
+          progressMessage = await sendToChannel({ content: body, components: progressComponents });
         } else {
-          await progressMessage.edit({ content: body });
+          await progressMessage.edit({ content: body, components: progressComponents });
         }
       } catch (e) {
         console.warn(`[progress] Failed to update progress for ${scopeId}:`, e instanceof Error ? e.message : e);
@@ -286,7 +469,7 @@ class SessionManager {
     const progressInterval = setInterval(() => {
       progressTick++;
       updateProgress(true).catch(() => {});
-    }, 3000);
+    }, 2000);
 
     const heartbeatInterval = setInterval(async () => {
       if (hasTextOutput) return;
@@ -300,6 +483,7 @@ class SessionManager {
     try {
       await updateProgress(true);
       const promptWithContext = [
+        buildGlobalOpsPrompt(),
         buildLocaleResponseHint(),
         !resumeSessionId && scopeId !== projectChannelId ? buildSkillIntro(selectedSkills) : null,
         !resumeSessionId && scopeId !== projectChannelId ? buildDefaultOpsHint() : null,
@@ -328,7 +512,7 @@ class SessionManager {
           settings: {
             disableAllHooks: true,
           },
-          settingSources: [],
+          settingSources: ["user", "project", "local"],
           ...(ultraFastModel ? { model: ultraFastModel } : {}),
           ...(useUltraFastMode ? { maxTurns: 1, promptSuggestions: false, agentProgressSummaries: false } : {}),
           env: {
@@ -355,9 +539,10 @@ class SessionManager {
               ? ` \`${(input.file_path as string).split(/[\\/]/).pop()}\``
               : "";
             lastActivity = `${toolLabels[toolName] ?? `Using ${toolName}`}${filePath}`;
-            progressDetail = lastActivity;
+            const specificToolStep = describeToolStep(toolName, input);
+            progressDetail = specificToolStep;
             logStepIfChanged(lastActivity);
-            logStepIfChanged(describeToolStep(toolName, input));
+            logStepIfChanged(specificToolStep);
             updateProgress().catch(() => {});
 
             if (!hasTextOutput) {
@@ -464,6 +649,7 @@ class SessionManager {
         sessionId: resumeSessionId ?? null,
         dbId,
         topic,
+        stopped: false,
       });
 
       for await (const message of queryInstance) {
@@ -496,6 +682,7 @@ class SessionManager {
               if (textParts.length > 0) {
                 const preview = textParts.join(" ").replace(/\s+/g, " ").slice(0, 120);
                 if (preview.length > 0) {
+                  latestDraftPreview = preview;
                   logStepIfChanged(L(`Drafting: ${preview}`, `응답 작성: ${preview}`));
                 }
               }
@@ -512,10 +699,10 @@ class SessionManager {
               }
             }
             if (subtype === "compact_boundary") {
-              this.forceFreshNext.add(scopeId);
+              sawCompactBoundary = true;
               const compactMsg = L(
-                "Context compacted; next request will start a fresh session for speed",
-                "컨텍스트 압축됨; 다음 요청은 속도를 위해 새 세션으로 시작",
+                "Context compacted; next request will continue the same thread session",
+                "컨텍스트 압축됨; 다음 요청도 같은 스레드 세션을 유지합니다",
               );
               progressDetail = compactMsg;
               logStepIfChanged(compactMsg);
@@ -525,11 +712,9 @@ class SessionManager {
             const waitMsg = L("Anthropic rate limit, waiting to continue", "Anthropic rate limit 대기 중");
             progressDetail = waitMsg;
             logStepIfChanged(waitMsg);
-            this.forceFreshNext.add(scopeId);
-            this.forceUltraFastNext.add(scopeId);
             logStepIfChanged(L(
-              "Next request will retry in fresh ultra-fast mode",
-              "다음 요청은 새 세션 초고속 모드로 재시도",
+              "Next request will retry while keeping the same session",
+              "다음 요청도 같은 세션을 유지한 채 재시도",
             ));
           } else if (message.type === "user") {
             // Do not log internal synthetic user events in progress timeline.
@@ -573,6 +758,7 @@ class SessionManager {
         const inputTokens = directUsage?.input_tokens ?? nestedUsage?.input_tokens ?? 0;
         if (typeof inputTokens === "number" && inputTokens > maxInputTokens) {
           maxInputTokens = inputTokens;
+          this.scopeTokenWatermark.set(scopeId, maxInputTokens);
         }
 
         if (message.type === "system" && "subtype" in message && message.subtype === "init") {
@@ -604,10 +790,9 @@ class SessionManager {
                   );
                   logStepIfChanged(textMsg);
                   if (textWaitMs >= 15000) {
-                    this.forceFreshNext.add(scopeId);
                     const slowMsg = L(
-                      "Slow first token detected; next request will use fresh session",
-                      "첫 토큰 지연 감지; 다음 요청은 새 세션 사용",
+                      "Slow first token detected; keep current session and continue",
+                      "첫 토큰 지연 감지; 현재 세션을 유지한 채 계속 진행",
                     );
                     progressDetail = slowMsg;
                     logStepIfChanged(slowMsg);
@@ -616,10 +801,33 @@ class SessionManager {
               }
             }
           }
+          const parsedCodexAutoDecision = extractCodexAutoDecision(responseBuffer);
+          if (parsedCodexAutoDecision && !codexAutoDecision) {
+            codexAutoDecision = parsedCodexAutoDecision;
+            const decisionModel = parsedCodexAutoDecision.model && parsedCodexAutoDecision.model !== "n/a"
+              ? ` (${parsedCodexAutoDecision.model})`
+              : "";
+            progressDetail = L(
+              `Codex auto selected: ${parsedCodexAutoDecision.path}${decisionModel}`,
+              `Codex 자동 선택: ${parsedCodexAutoDecision.path}${decisionModel}`,
+            );
+            logStepIfChanged(progressDetail);
+          }
+          if (parsedCodexAutoDecision && !codexAutoDecisionAnnounced) {
+            codexAutoDecisionAnnounced = true;
+            const decisionLines = [
+              "Codex Auto Decision",
+              `• Path: ${parsedCodexAutoDecision.path}`,
+              ...(parsedCodexAutoDecision.reason ? [`• Reason: ${parsedCodexAutoDecision.reason}`] : []),
+              ...(parsedCodexAutoDecision.model ? [`• Model: ${parsedCodexAutoDecision.model}`] : []),
+              ...(parsedCodexAutoDecision.next ? [`• Next: ${parsedCodexAutoDecision.next}`] : []),
+            ];
+            await sendToChannel(decisionLines.join("\n"));
+          }
           updateProgress().catch(() => {});
 
           const now = Date.now();
-          if (now - lastEditTime >= EDIT_INTERVAL && responseBuffer.length > 0) {
+          if (now - lastEditTime >= editInterval && responseBuffer.length > 0) {
             lastEditTime = now;
             try {
               const liveText = formatStreamChunk(responseBuffer);
@@ -628,7 +836,9 @@ class SessionManager {
               } else {
                 await currentMessage.edit({ content: liveText || "..." });
               }
+              tightenEditInterval();
             } catch (e) {
+              loosenEditInterval();
               console.warn(`[stream] Failed to edit message for ${scopeId}:`, e instanceof Error ? e.message : e);
             }
           }
@@ -657,9 +867,13 @@ class SessionManager {
             .find((line) => line.length > 0)
             ?.slice(0, 180) ?? L("Task completed", "작업 완료");
           const usageSummary = await getUsageSummaryLine();
-          const contextSummary = maxInputTokens > 0
+          const activeInputSummary = maxInputTokens > 0
             ? `~${Math.max(1, Math.min(100, Math.round((maxInputTokens / 200_000) * 100)))}% (${maxInputTokens.toLocaleString()} tok)`
             : null;
+          const continuitySummary = L(
+            `resume=${resumeSessionId ? "yes" : "no"}, compacted=${sawCompactBoundary ? "yes" : "no"}`,
+            `resume=${resumeSessionId ? "예" : "아니오"}, compacted=${sawCompactBoundary ? "예" : "아니오"}`,
+          );
           const primarySkill = selectedSkills[0] ?? "none";
           const omcStatusLine = [
             `skill:${primarySkill}`,
@@ -667,33 +881,100 @@ class SessionManager {
             `🔧${toolUseCount} 🤖1 ⚡${project.auto_approve ? 1 : 0}`,
             `model:${ultraFastModel ?? "default"}`,
           ].join(" | ");
-          const resultEmbed = createResultEmbed(
+          const completionSessionId = this.sessions.get(scopeId)?.sessionId ?? resumeSessionId ?? null;
+          const completionCheckpoint = completionSessionId
+            ? createCheckpoint(scopeId, projectChannelId, conclusion, undefined, completionSessionId)
+            : null;
+          if (completionCheckpoint) {
+            const autoInsights = extractCheckpointInsights(resultText);
+            if (autoInsights.length > 0) {
+              addImprovements(completionCheckpoint.id, autoInsights);
+              completionCheckpoint.improvements = autoInsights;
+            }
+          }
+          const completionLines = [
+            `✅ ${L("Task Complete", "작업 완료")}`,
             resultText,
-            resultMsg.total_cost_usd ?? 0,
-            resultMsg.duration_ms ?? 0,
-            getConfig().SHOW_COST,
-            usageSummary,
-            contextSummary,
-            omcStatusLine,
-          );
-          await sendToChannel({ embeds: [resultEmbed] });
+            "",
+            `\`${omcStatusLine}\``,
+            ...(getDisplayActivityLog().length > 0
+              ? [
+                `${L("Recent Process", "최근 진행 과정")}:`,
+                ...getDisplayActivityLog().map((line) => `• ${line}`),
+              ]
+              : []),
+            ...(usageSummary ? usageSummary.split(" | ") : []),
+            ...(codexAutoDecision
+              ? [
+                `${L("Codex auto decision", "Codex 자동 결정")} : ${codexAutoDecision.path}${codexAutoDecision.model && codexAutoDecision.model !== "n/a" ? ` (${codexAutoDecision.model})` : ""}`,
+                ...(codexAutoDecision.reason ? [`${L("Decision reason", "선택 이유")} : ${codexAutoDecision.reason}`] : []),
+                ...(codexAutoDecision.next ? [`${L("Next action", "다음 자동 행동")} : ${codexAutoDecision.next}`] : []),
+              ]
+              : []),
+            `${L("Session continuity", "세션 연속성")} : ${continuitySummary}`,
+            ...(activeInputSummary ? [`${L("Active input estimate", "활성 입력 추정치")} : ${activeInputSummary}`] : []),
+            `${L("Duration", "소요 시간")} : ${(resultMsg.duration_ms / 1000).toFixed(1)}s`,
+          ].filter(Boolean);
+          const completionBody = completionLines.join("\n");
+          const completionChunks = splitMessage(completionBody);
+          if (completionChunks.length === 0) {
+            await sendToChannel({
+              content: L("✅ Task Complete", "✅ 작업 완료"),
+              components: completionSessionId
+                ? [
+                  createProgressButtons({
+                    checkpointId: completionCheckpoint?.id ?? "_",
+                    hasCheckpoint: true,
+                  }),
+                ]
+                : [],
+            });
+          } else {
+            for (let i = 0; i < completionChunks.length; i++) {
+              const isLast = i === completionChunks.length - 1;
+              await sendToChannel({
+                content: completionChunks[i],
+                components: isLast && completionSessionId
+                  ? [
+                    createProgressButtons({
+                      checkpointId: completionCheckpoint?.id ?? "_",
+                      hasCheckpoint: true,
+                    }),
+                  ]
+                  : [],
+              });
+            }
+          }
 
           if (progressMessage) {
             const doneSec = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
             const doneLines = [
               `• ${L("Session", "세션")}: ${sessionMode}`,
+              `• ${L("Request", "요청")}: ${promptPreview || L("No prompt preview", "요청 미리보기 없음")}`,
               `✅ ${L("Completed", "완료")}: ${conclusion}`,
               `• ${L("Tools", "도구")}: ${toolUseCount}`,
               `• ${L("Elapsed", "소요 시간")}: ${doneSec}s`,
             ];
-            if (activityLog.length > 0) {
+            if (codexAutoDecision) {
+              const decisionModel = codexAutoDecision.model && codexAutoDecision.model !== "n/a"
+                ? ` (${codexAutoDecision.model})`
+                : "";
+              doneLines.push(`• ${L("Codex auto path", "Codex 자동 경로")}: ${codexAutoDecision.path}${decisionModel}`);
+            }
+            if (latestDraftPreview) {
+              doneLines.push(`• ${L("Latest draft", "최근 응답 초안")}: ${latestDraftPreview}`);
+            }
+            const displayActivity = getDisplayActivityLog();
+            if (displayActivity.length > 0) {
               doneLines.push(`• ${L("Process", "과정")}:`);
-              const recent = activityLog.slice(-8);
-              for (const item of recent) doneLines.push(`• ${item}`);
+              for (const item of displayActivity) doneLines.push(`• ${item}`);
             }
             doneLines.push(`• ${L("Last event", "마지막 이벤트")}: ${lastStreamEventLabel}`);
             const doneProgressMessage = progressMessage as { edit: (v: any) => Promise<any>; delete?: () => Promise<any> } | null;
-            await doneProgressMessage?.edit({ content: doneLines.join("\n") }).catch(() => {});
+            await doneProgressMessage?.edit({
+              content: doneLines.join("\n"),
+              components: [],
+            }).catch(() => {});
             setTimeout(() => {
               doneProgressMessage?.delete?.().catch(() => {});
             }, 10_000);
@@ -709,10 +990,17 @@ class SessionManager {
           }
 
           this.setStoredStatus(scopeId, projectChannelId, "idle");
+          if (maxInputTokens > 0) this.scopeTokenWatermark.set(scopeId, maxInputTokens);
           hasResult = true;
         }
       }
     } catch (error) {
+      const stoppedSession = this.sessions.get(scopeId);
+      if (stoppedSession?.stopped) {
+        this.setStoredStatus(scopeId, projectChannelId, "idle");
+        hasResult = true;
+        return;
+      }
       if (hasResult) {
         console.warn(`[session] Ignoring post-result error for ${scopeId}:`, error instanceof Error ? error.message : error);
         return;
@@ -766,8 +1054,8 @@ class SessionManager {
         const remaining = queue.length;
         const preview = next.prompt.length > 40 ? next.prompt.slice(0, 40) + "…" : next.prompt;
         const msg = remaining > 0
-          ? L(`📨 Processing queued message... (remaining: ${remaining})\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)\n> ${preview}`)
-          : L(`📨 Processing queued message...\n> ${preview}`, `📨 대기 중이던 메시지를 처리합니다...\n> ${preview}`);
+          ? L(`📨 Processing queued message... (remaining: ${remaining})\n• Request: ${preview}`, `📨 대기 중이던 메시지를 처리합니다... (남은 큐: ${remaining}개)\n• 요청: ${preview}`)
+          : L(`📨 Processing queued message...\n• Request: ${preview}`, `📨 대기 중이던 메시지를 처리합니다...\n• 요청: ${preview}`);
         if (next.sourceMessageId) {
           channel.send({
             content: msg,
@@ -787,6 +1075,7 @@ class SessionManager {
   async stopSession(scopeId: string): Promise<boolean> {
     const session = this.sessions.get(scopeId);
     if (!session) return false;
+    session.stopped = true;
 
     try {
       await session.queryInstance.interrupt();
@@ -867,6 +1156,13 @@ class SessionManager {
     queue.push(pending);
     this.messageQueue.set(scopeId, queue);
     return true;
+  }
+
+  takePendingQueue(scopeId: string): { channel: TextChannel; prompt: string; sourceMessageId?: string } | null {
+    const pending = this.pendingQueuePrompts.get(scopeId);
+    if (!pending) return null;
+    this.pendingQueuePrompts.delete(scopeId);
+    return pending;
   }
 
   enqueueMessage(scopeId: string, channel: TextChannel, prompt: string, sourceMessageId?: string): boolean {

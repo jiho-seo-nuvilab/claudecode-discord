@@ -1,10 +1,11 @@
 #!/bin/bash
 # Claude Discord Bot - Auto-update & Start Script
 # Usage:
-#   ./mac-start.sh          → Start (background + menu bar)
-#   ./mac-start.sh --fg     → Foreground mode (for debugging)
-#   ./mac-start.sh --stop   → Stop
-#   ./mac-start.sh --status → Check status
+#   ./mac-start.sh            → Ensure started (idempotent, no duplicate/restart)
+#   ./mac-start.sh --restart  → Force restart
+#   ./mac-start.sh --fg       → Foreground mode (for debugging)
+#   ./mac-start.sh --stop     → Stop
+#   ./mac-start.sh --status   → Check status
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -17,6 +18,28 @@ MENUBAR="$SCRIPT_DIR/menubar/ClaudeBotMenu"
 MENUBAR_PLIST_NAME="com.claude-discord-menubar.plist"
 MENUBAR_PLIST_DST="$HOME/Library/LaunchAgents/$MENUBAR_PLIST_NAME"
 MENUBAR_LABEL="com.claude-discord-menubar"
+
+is_bot_running() {
+    if launchctl list | grep -q "$LABEL"; then
+        local pid
+        pid=$(launchctl list | awk -v label="$LABEL" '$3==label{print $1}')
+        if [ -n "$pid" ] && [ "$pid" != "-" ] && [ "$pid" != "0" ]; then
+            return 0
+        fi
+    fi
+    pgrep -f "node dist/index.js" >/dev/null 2>&1
+}
+
+is_menubar_running() {
+    if launchctl list | grep -q "$MENUBAR_LABEL"; then
+        local pid
+        pid=$(launchctl list | awk -v label="$MENUBAR_LABEL" '$3==label{print $1}')
+        if [ -n "$pid" ] && [ "$pid" != "-" ] && [ "$pid" != "0" ]; then
+            return 0
+        fi
+    fi
+    pgrep -f "ClaudeBotMenu" >/dev/null 2>&1
+}
 
 # --stop: 중지
 if [ "$1" = "--stop" ]; then
@@ -34,11 +57,17 @@ fi
 
 # --status: 상태 확인
 if [ "$1" = "--status" ]; then
-    if launchctl list | grep -q "$LABEL"; then
-        PID=$(launchctl list | grep "$LABEL" | awk '{print $1}')
-        echo "🟢 Bot running (PID: $PID)"
+    if is_bot_running; then
+        PID=$(launchctl list | awk -v label="$LABEL" '$3==label{print $1}')
+        echo "🟢 Bot running${PID:+ (PID: $PID)}"
     else
         echo "🔴 Bot stopped"
+    fi
+    if is_menubar_running; then
+        MPID=$(launchctl list | awk -v label="$MENUBAR_LABEL" '$3==label{print $1}')
+        echo "🟢 Menu bar running${MPID:+ (PID: $MPID)}"
+    else
+        echo "🔴 Menu bar stopped"
     fi
     exit 0
 fi
@@ -114,14 +143,25 @@ if ! node -e "require('./node_modules/better-sqlite3/build/Release/better_sqlite
     npm rebuild better-sqlite3
 fi
 
-# Stop existing bot if running
-if launchctl list | grep -q "$LABEL"; then
-    echo "🔄 Stopping existing bot..."
-    launchctl unload "$PLIST_DST" 2>/dev/null
-    sleep 1
+# Idempotent default: if already running, do not restart.
+FORCE_RESTART=0
+if [ "$1" = "--restart" ]; then
+    FORCE_RESTART=1
 fi
-# Also kill any orphaned bot processes not managed by launchd
-pkill -f "node dist/index.js" 2>/dev/null && sleep 1
+
+if [ "$FORCE_RESTART" -eq 1 ]; then
+    if is_bot_running; then
+        echo "🔄 Forcing bot restart..."
+        launchctl unload "$PLIST_DST" 2>/dev/null
+        # Also kill orphaned process if any
+        pkill -f "node dist/index.js" 2>/dev/null
+        sleep 1
+    fi
+else
+    if is_bot_running; then
+        echo "🟢 Bot already running (no restart, no duplicate)."
+    fi
+fi
 
 # Compile menu bar app (rebuild if source is newer than binary)
 if [ -f "$SCRIPT_DIR/menubar/ClaudeBotMenu.swift" ]; then
@@ -147,8 +187,13 @@ fi
 
 # Start menu bar app (shows settings dialog if .env not configured)
 if [ -f "$MENUBAR" ]; then
-    pkill -f "ClaudeBotMenu" 2>/dev/null
-    nohup "$MENUBAR" > /dev/null 2>&1 &
+    if [ "$FORCE_RESTART" -eq 1 ]; then
+        pkill -f "ClaudeBotMenu" 2>/dev/null
+        sleep 1
+    fi
+    if ! is_menubar_running; then
+        nohup "$MENUBAR" > /dev/null 2>&1 &
+    fi
 fi
 
 # Start bot if .env is properly configured, otherwise let menu bar handle setup
@@ -217,12 +262,24 @@ PLISTEOF
 }
 
 if is_env_configured; then
+    BOT_STARTED_NOW=0
     generate_plist
-    launchctl load "$PLIST_DST"
-    if [ -f "$MENUBAR" ]; then
-        echo "🟢 Bot started in background (menu bar active)"
+    if ! is_bot_running; then
+        launchctl load "$PLIST_DST"
+        BOT_STARTED_NOW=1
+    fi
+    if [ "$BOT_STARTED_NOW" -eq 1 ]; then
+        if [ -f "$MENUBAR" ]; then
+            echo "🟢 Bot started in background (menu bar active)"
+        else
+            echo "🟢 Bot started in background"
+        fi
     else
-        echo "🟢 Bot started in background"
+        if [ -f "$MENUBAR" ]; then
+            echo "🟢 Bot already active (menu bar active)"
+        else
+            echo "🟢 Bot already active"
+        fi
     fi
 else
     echo "⚙️ .env not found. Please configure settings from the menu bar icon."

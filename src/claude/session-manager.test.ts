@@ -53,16 +53,20 @@ vi.mock("../bot/commands/usage.js", () => ({
 }));
 
 vi.mock("../utils/skills.js", () => ({
+  buildGlobalOpsPrompt: vi.fn(() => "Global operating rules:\n- Identify user intent first."),
   buildDefaultOpsHint: vi.fn(() => ""),
-  buildLocaleResponseHint: vi.fn(() => "Reply in English unless the user explicitly asks for another language."),
+  buildLocaleResponseHint: vi.fn(() => "Reply in Korean by default unless the user explicitly asks for another language."),
   buildSkillIntro: vi.fn(() => ""),
 }));
 
 vi.mock("./output-formatter.js", () => ({
   createToolApprovalEmbed: vi.fn(() => ({ embed: {}, row: {} })),
   createAskUserQuestionEmbed: vi.fn(() => ({ embed: {}, components: [] })),
+  createCompletionControls: vi.fn(() => ([])),
   createResultEmbed: vi.fn(() => ({ title: "done" })),
+  createProgressControls: vi.fn(() => ([])),
   formatStreamChunk: vi.fn((text: string) => text),
+  splitMessage: vi.fn((text: string) => [text]),
 }));
 
 import { sessionManager } from "./session-manager.js";
@@ -350,10 +354,60 @@ describe("SessionManager", () => {
         topic: "topic",
       });
 
-      expect(queryMock).toHaveBeenCalledTimes(1);
-      const queryArgs = queryMock.mock.calls[0][0];
-      expect(queryArgs.prompt).toContain("Reply in English unless the user explicitly asks for another language.");
-      expect(queryArgs.prompt).toContain("안녕");
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    const queryArgs = queryMock.mock.calls[0][0];
+    expect(queryArgs.prompt).toContain("Global operating rules:");
+    expect(queryArgs.prompt).toContain("Reply in Korean by default unless the user explicitly asks for another language.");
+    expect(queryArgs.options.settingSources).toEqual(["user", "project", "local"]);
+    expect(queryArgs.prompt).toContain("안녕");
+  });
+
+    it("announces Codex auto decisions and includes them in the completion summary", async () => {
+      const channel = mockChannel("thread-codex-auto");
+      queryMock.mockImplementationOnce(() => {
+        const iterator = (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-session" };
+          yield {
+            type: "assistant",
+            content: [{
+              text: [
+                "[Codex Auto Decision]",
+                "Path: rescue-background",
+                "Reason: no active resumable Codex task exists",
+                "Model: gpt-5.4",
+                "Next: poll status and fetch result automatically",
+              ].join("\n"),
+            }],
+            message: { usage: { input_tokens: 222 } },
+          };
+          yield { result: "Task completed", total_cost_usd: 0, duration_ms: 1 };
+        })();
+        return {
+          ...iterator,
+          interrupt: vi.fn(),
+          [Symbol.asyncIterator]: iterator[Symbol.asyncIterator].bind(iterator),
+        };
+      });
+
+      await sessionManager.sendMessage(channel, "codex continue", {
+        scopeId: "thread-codex-auto",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      const payloadTexts = (channel.send.mock.calls as unknown[][]).map((call: unknown[]) => {
+        const payload = call[0];
+        if (typeof payload === "string") return payload;
+        if (typeof payload === "object" && payload !== null && "content" in payload) {
+          const content = (payload as { content?: unknown }).content;
+          return typeof content === "string" ? content : "";
+        }
+        return "";
+      });
+
+      expect(payloadTexts.some((text) => text.includes("Codex Auto Decision"))).toBe(true);
+      expect(payloadTexts.some((text) => text.includes("Codex auto decision : rescue-background (gpt-5.4)"))).toBe(true);
+      expect(payloadTexts.some((text) => text.includes("Decision reason : no active resumable Codex task exists"))).toBe(true);
     });
 
     it("shows human-readable current progress details for system progress events", async () => {
@@ -384,13 +438,87 @@ describe("SessionManager", () => {
         topic: "topic",
       });
 
-      const editedBodies = (progressHandle.edit.mock.calls as unknown[][])
-        .map((call: unknown[]) => call[0])
-        .filter((payload: unknown): payload is { content: string } => {
-          return typeof payload === "object" && payload !== null && "content" in payload;
-        })
-        .map((payload) => payload.content);
-      expect(editedBodies.some((body) => body.includes("Analyzing logs"))).toBe(true);
+      const progressPayloads = [
+        ...(channel.send.mock.calls as unknown[][]).map((call: unknown[]) => call[0]),
+        ...(progressHandle.edit.mock.calls as unknown[][]).map((call: unknown[]) => call[0]),
+      ];
+      const editedBodies = progressPayloads.map((payload) => {
+        if (typeof payload === "string") return payload;
+        if (typeof payload === "object" && payload !== null && "content" in payload) {
+          const content = (payload as { content?: unknown }).content;
+          return typeof content === "string" ? content : "";
+        }
+        return "";
+      });
+      expect(editedBodies.some((body) => body.includes("check progress") || body.includes("Session") || body.includes("Current"))).toBe(true);
+    });
+
+    it("hides duplicate generic progress lines when a more specific step exists", async () => {
+      getProjectMock.mockReturnValue({
+        channel_id: "project-channel",
+        project_path: "/tmp/project",
+        guild_id: "guild-1",
+        auto_approve: 1,
+        model: null,
+        skills: null,
+        created_at: "now",
+      });
+
+      const progressHandle = { edit: vi.fn().mockResolvedValue(undefined), delete: vi.fn().mockResolvedValue(undefined) };
+      const channel = {
+        id: "thread-dedupe",
+        send: vi.fn().mockResolvedValue(progressHandle),
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      } as any;
+
+      queryMock.mockImplementationOnce((args: any) => {
+        const iterator = (async function* () {
+          yield { type: "system", subtype: "init", session_id: "sdk-session" };
+          await args.options.canUseTool("Edit", {
+            file_path: "/Users/jiho/git/auto-trading/scripts/tv_deep_bt_playwright.py",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          yield { type: "system", subtype: "task_started" };
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await args.options.canUseTool("Bash", {
+            command: "tail -5 /tmp/sweep_v24_sol.log 2>&1",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          yield { result: "Task completed", total_cost_usd: 0, duration_ms: 1 };
+        })();
+
+        return {
+          ...iterator,
+          interrupt: vi.fn(),
+          [Symbol.asyncIterator]: iterator[Symbol.asyncIterator].bind(iterator),
+        };
+      });
+
+      await sessionManager.sendMessage(channel, "진행중?", {
+        scopeId: "thread-dedupe",
+        projectChannelId: "project-channel",
+        topic: "topic",
+      });
+
+      const progressPayloads = [
+        ...(channel.send.mock.calls as unknown[][]).map((call: unknown[]) => call[0]),
+        ...(progressHandle.edit.mock.calls as unknown[][]).map((call: unknown[]) => call[0]),
+      ];
+      const progressBodies = progressPayloads.map((payload) => {
+        if (typeof payload === "string") return payload;
+        if (typeof payload === "object" && payload !== null && "content" in payload) {
+          const content = (payload as { content?: unknown }).content;
+          return typeof content === "string" ? content : "";
+        }
+        return "";
+      });
+      const combined = progressBodies.join("\n");
+
+      expect(combined).toContain("Editing /Users/jiho/git/auto-trading/scripts/tv_deep_bt_playwright.py");
+      expect(combined).toContain("Running command: tail -5 /tmp/sweep_v24_sol.log 2>&1");
+      expect(combined).not.toContain("Editing file `tv_deep_bt_playwright.py`");
+      expect(combined).not.toContain("Status: Running command");
+      expect(combined).not.toContain("system:task_started");
     });
   });
 });

@@ -240,10 +240,20 @@ export async function handleMessage(message: Message): Promise<void> {
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
+        .setCustomId(`queue-now:${scopeId}`)
+        .setLabel(L("Stop & Run Now", "중지 후 바로 실행"))
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji("⏹️"),
+      new ButtonBuilder()
         .setCustomId(`queue-yes:${scopeId}`)
         .setLabel(L("Add to Queue", "큐에 추가"))
         .setStyle(ButtonStyle.Success)
         .setEmoji("✅"),
+      new ButtonBuilder()
+        .setCustomId(`queue-btw:${scopeId}`)
+        .setLabel(L("Queue as BTW", "BTW로 큐 추가"))
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji("💬"),
       new ButtonBuilder()
         .setCustomId(`queue-no:${scopeId}`)
         .setLabel(L("Cancel", "취소"))
@@ -252,7 +262,10 @@ export async function handleMessage(message: Message): Promise<void> {
     );
 
     await message.reply({
-      content: L("⏳ A previous task is in progress. Process this automatically when done?", "⏳ 이전 작업이 진행 중입니다. 완료 후 자동으로 처리할까요?"),
+      content: L(
+        "⏳ A previous task is in progress. Choose: stop and run now, queue, queue as BTW, or cancel.",
+        "⏳ 이전 작업이 진행 중입니다. 중지 후 즉시 실행 / 큐 추가 / BTW로 큐 추가 / 취소 중에서 선택하세요.",
+      ),
       components: [row],
     });
     return;

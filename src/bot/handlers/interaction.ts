@@ -12,15 +12,18 @@ import {
   TextInputStyle,
   type InteractionUpdateOptions,
   type MessageEditOptions,
+  EmbedBuilder,
 } from "discord.js";
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { isAllowedUser } from "../../security/guard.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import {
   upsertSession,
   getProject,
   getSession,
+  getThreadSession,
   registerProject,
   getLatestThreadSession,
   upsertThreadSession,
@@ -33,6 +36,15 @@ import {
 import { findSessionDir, getLastAssistantMessage } from "../commands/sessions.js";
 import { clearPendingRootPrompt, consumePendingRootPrompt } from "../thread-router.js";
 import { L } from "../../utils/i18n.js";
+import {
+  DEFAULT_CODEX_MODEL,
+  buildCodexAutoContinuePrompt,
+  buildCodexCancelCommand,
+  buildCodexRescueCommand,
+  buildCodexResultCommand,
+  buildCodexReviewCommand,
+  buildCodexStatusCommand,
+} from "../../utils/codex.js";
 import { buildDefaultOpsHint, buildSkillIntro } from "../../utils/skills.js";
 import {
   clearPickerQuery,
@@ -44,6 +56,137 @@ import {
   setPickerDir,
   setPickerQuery,
 } from "../project-picker.js";
+import {
+  createProgressButtons,
+  createProgressStatusMessage,
+  splitLongMessage,
+  createProgressEmbed,
+  createReviewModeControls,
+} from "../../claude/progress-buttons.js";
+import {
+  createCheckpoint,
+  getLastCheckpoint,
+  getAllCheckpoints,
+  addImprovements,
+  updateCheckpointStatus,
+  getCheckpoint,
+} from "../../claude/checkpoints.js";
+
+function resumeStoredSession(
+  scopeId: string,
+  projectChannelId: string,
+  sessionId: string,
+  interaction: ButtonInteraction | ModalSubmitInteraction,
+): void {
+  const existing = getThreadSession(scopeId);
+  const threadName =
+    interaction.channel && interaction.channel.isThread() ? interaction.channel.name : null;
+
+  if (scopeId === projectChannelId) {
+    upsertSession(randomUUID(), projectChannelId, sessionId, "idle");
+    return;
+  }
+
+  upsertThreadSession(
+    scopeId,
+    projectChannelId,
+    sessionId,
+    "idle",
+    existing?.topic ?? threadName,
+  );
+}
+
+function buildCodexContinueCommand(improvements: string[]): string {
+  const body = improvements.length > 0
+    ? `Continue from the just-completed point. First apply these improvements, then proceed with the next concrete implementation step:\n- ${improvements.join("\n- ")}`
+    : "Continue from the just-completed point and take the next concrete implementation step.";
+  return buildCodexRescueCommand(body);
+}
+
+function getProjectChannelIdFromInteraction(
+  interaction: Pick<ButtonInteraction, "channelId" | "channel">,
+): string {
+  const channel = interaction.channel;
+  if (channel && "isThread" in channel && typeof channel.isThread === "function" && channel.isThread()) {
+    return channel.parentId ?? interaction.channelId;
+  }
+  return interaction.channelId;
+}
+
+function buildAutoReviewFocus(checkpoint: { description?: string; improvements?: string[] } | null): string {
+  const parts: string[] = [];
+  if (checkpoint?.description) {
+    parts.push(`latest outcome: ${checkpoint.description}`);
+  }
+  const improvements = (checkpoint?.improvements ?? []).slice(0, 5);
+  if (improvements.length > 0) {
+    parts.push(`checkpoint insights: ${improvements.join(" | ")}`);
+  }
+  parts.push("challenge assumptions, race conditions, rollback safety, and whether a simpler approach exists");
+  return parts.join(" / ");
+}
+
+function deriveEffectiveImprovements(
+  scopeId: string,
+  checkpoint: { id?: string; description?: string; improvements?: string[] } | null,
+): string[] {
+  const own = (checkpoint?.improvements ?? []).filter((item) => item.trim().length > 0);
+  if (own.length > 0) return own.slice(0, 8);
+
+  const fallback = getAllCheckpoints(scopeId)
+    .filter((cp) => cp.id !== checkpoint?.id && (cp.improvements?.length ?? 0) > 0)
+    .flatMap((cp) => cp.improvements ?? [])
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (fallback.length > 0) return Array.from(new Set(fallback)).slice(0, 8);
+
+  const description = checkpoint?.description?.trim();
+  if (description) {
+    return [
+      L(
+        `Continue from latest outcome: ${description}`,
+        `최신 결과를 기준으로 이어서 진행: ${description}`,
+      ),
+    ];
+  }
+
+  return [
+    L(
+      "Use latest Reflection, Improvement, and Next Step Suggestion as the execution plan baseline.",
+      "가장 최근 Reflection, Improvement, Next Step Suggestion을 실행 계획의 기본선으로 사용하세요.",
+    ),
+  ];
+}
+
+function extractCheckpointIdFromRequest(requestId: string): string {
+  const direct = requestId.trim();
+  const uuidMatch = direct.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  if (uuidMatch) return uuidMatch[1];
+  return direct;
+}
+
+async function ensureEphemeralReply(interaction: ButtonInteraction): Promise<void> {
+  if (!interaction.deferred && !interaction.replied) {
+    console.log(`[button-ack] deferUpdate start ${interaction.customId}`);
+    await interaction.deferUpdate();
+    console.log(`[button-ack] deferUpdate ok ${interaction.customId}`);
+  }
+}
+
+async function sendEphemeralButtonMessage(
+  interaction: ButtonInteraction,
+  payload: Parameters<ButtonInteraction["reply"]>[0],
+): Promise<void> {
+  if (interaction.replied || interaction.deferred) {
+    console.log(`[button-reply] followUp ${interaction.customId}`);
+    await interaction.followUp({ ...(payload as object), flags: ["Ephemeral"] });
+    console.log(`[button-reply] followUp ok ${interaction.customId}`);
+    return;
+  }
+  console.log(`[button-reply] reply ${interaction.customId}`);
+  await interaction.reply({ ...(payload as object), flags: ["Ephemeral"] });
+  console.log(`[button-reply] reply ok ${interaction.customId}`);
+}
 
 function buildProjectPickerView(channelId: string): InteractionUpdateOptions {
   const existing = getProject(channelId);
@@ -129,6 +272,7 @@ async function showProjectPicker(
 export async function handleButtonInteraction(
   interaction: ButtonInteraction,
 ): Promise<void> {
+  console.log(`[handleButtonInteraction] customId=${interaction.customId}`);
   if (!isAllowedUser(interaction.user.id)) {
     await interaction.reply({
       content: L("You are not authorized.", "권한이 없습니다."),
@@ -400,8 +544,109 @@ export async function handleButtonInteraction(
     }
     const queueSize = sessionManager.getQueueSize(requestId);
     await interaction.update({
-      content: L(`📨 Message added to queue (${queueSize}/5). It will be processed after the current task.`, `📨 메시지가 큐에 추가되었습니다 (${queueSize}/5). 이전 작업 완료 후 자동으로 처리됩니다.`),
+      content: L(
+        `📨 Message added to queue (${queueSize}/5). It will be processed after the current task.\n• You can use /cc-status to see live progress.`,
+        `📨 메시지가 큐에 추가되었습니다 (${queueSize}/5). 이전 작업 완료 후 자동으로 처리됩니다.\n• /cc-status 로 현재 진행 상황을 볼 수 있습니다.`,
+      ),
       components: [],
+    });
+    return;
+  }
+
+  if (action === "queue-now") {
+    const pending = sessionManager.takePendingQueue(requestId);
+    if (!pending) {
+      await interaction.update({
+        content: L("⏳ Queue request has expired.", "⏳ 큐 요청이 만료되었습니다."),
+        components: [],
+      });
+      return;
+    }
+
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const sessionRecord = requestId === projectChannelId ? getSession(projectChannelId) : getThreadSession(requestId);
+    const resumeSessionId = sessionRecord?.session_id ?? undefined;
+    const interruptCheckpoint = resumeSessionId
+      ? createCheckpoint(
+        requestId,
+        projectChannelId,
+        L(
+          "Interrupted by Stop & Run Now before completion.",
+          "완료 전 '중지 후 바로 실행'으로 중단됨.",
+        ),
+        undefined,
+        resumeSessionId,
+      )
+      : null;
+    if (interruptCheckpoint) {
+      addImprovements(interruptCheckpoint.id, [
+        L(
+          `Queued request triggered interruption: ${pending.prompt.slice(0, 120)}`,
+          `대기 요청으로 중단됨: ${pending.prompt.slice(0, 120)}`,
+        ),
+      ]);
+      updateCheckpointStatus(interruptCheckpoint.id, "reviewed");
+    }
+    await sessionManager.stopSession(requestId);
+
+    await interaction.update({
+      content: L(
+        "⏹️ Stopped current task and saved an interrupt checkpoint. Running your new request now.",
+        "⏹️ 현재 작업을 중지하고 중단 체크포인트를 저장했습니다. 새 요청을 바로 실행합니다.",
+      ),
+      components: [],
+    });
+
+    await sessionManager.sendMessage(pending.channel, pending.prompt, {
+      scopeId: requestId,
+      projectChannelId,
+      topic: interaction.channel && interaction.channel.isThread() ? interaction.channel.name : null,
+      preferFreshSession: true,
+      sourceMessageId: pending.sourceMessageId,
+    });
+    return;
+  }
+
+  if (action === "queue-btw") {
+    const pending = sessionManager.takePendingQueue(requestId);
+    if (!pending) {
+      await interaction.update({
+        content: L("⏳ Queue request has expired.", "⏳ 큐 요청이 만료되었습니다."),
+        components: [],
+      });
+      return;
+    }
+
+    const btwPrompt = `[BTW side question]\n${pending.prompt}`;
+    if (sessionManager.isActive(requestId)) {
+      const queued = sessionManager.enqueueMessage(requestId, pending.channel, btwPrompt, pending.sourceMessageId);
+      if (!queued) {
+        await interaction.update({
+          content: L("Queue is full (max 5). Please wait for current tasks to finish.", "큐가 가득 찼습니다 (최대 5개). 현재 작업 완료 후 다시 시도해 주세요."),
+          components: [],
+        });
+        return;
+      }
+      await interaction.update({
+        content: L(
+          `💬 Queued as BTW (${sessionManager.getQueueSize(requestId)}/5).`,
+          `💬 BTW로 큐에 추가했습니다 (${sessionManager.getQueueSize(requestId)}/5).`,
+        ),
+        components: [],
+      });
+      return;
+    }
+
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    await interaction.update({
+      content: L("No active task now. Sending BTW immediately.", "현재 활성 작업이 없어 BTW를 바로 전송합니다."),
+      components: [],
+    });
+    await sessionManager.sendMessage(pending.channel, btwPrompt, {
+      scopeId: requestId,
+      projectChannelId,
+      topic: interaction.channel && interaction.channel.isThread() ? interaction.channel.name : null,
+      sourceMessageId: pending.sourceMessageId,
     });
     return;
   }
@@ -417,17 +662,54 @@ export async function handleButtonInteraction(
 
   if (action === "session-resume") {
     const sessionId = requestId;
-    const channelId = interaction.channelId;
-    const { randomUUID } = await import("node:crypto");
-    upsertSession(randomUUID(), channelId, sessionId, "idle");
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const project = getProject(projectChannelId);
+    if (!project) {
+      await interaction.update({
+        content: L("Project not found.", "프로젝트를 찾을 수 없습니다."),
+        components: [],
+      });
+      return;
+    }
+    resumeStoredSession(scopeId, projectChannelId, sessionId, interaction);
 
     await interaction.update({
       embeds: [
         {
           title: L("Session Resumed", "세션 재개됨"),
           description: L(
-            `Session: \`${sessionId.slice(0, 8)}...\`\n\nNext message you send will resume this conversation.`,
-            `세션: \`${sessionId.slice(0, 8)}...\`\n\n다음 메시지부터 이 대화가 재개됩니다.`,
+            `Session: \`${sessionId.slice(0, 8)}...\`\n\nNext message you send will continue from that completed point.`,
+            `세션: \`${sessionId.slice(0, 8)}...\`\n\n다음 메시지부터 해당 완료 시점에서 이어집니다.`,
+          ),
+          color: 0x00ff00,
+        },
+      ],
+      components: [],
+    });
+    return;
+  }
+
+  if (action === "checkpoint-resume") {
+    await ensureEphemeralReply(interaction);
+    const checkpoint = getCheckpoint(extractCheckpointIdFromRequest(requestId));
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    if (!checkpoint?.resumeSessionId) {
+      await sendEphemeralButtonMessage(interaction, {
+        content: L("Saved checkpoint session was not found.", "저장된 체크포인트 세션을 찾지 못했습니다."),
+        components: [],
+      });
+      return;
+    }
+    resumeStoredSession(scopeId, projectChannelId, checkpoint.resumeSessionId, interaction);
+    await sendEphemeralButtonMessage(interaction, {
+      embeds: [
+        {
+          title: L("Session Resumed", "세션 재개됨"),
+          description: L(
+            `Session: \`${checkpoint.resumeSessionId.slice(0, 8)}...\`\n\nNext message you send will continue from that completed point.`,
+            `세션: \`${checkpoint.resumeSessionId.slice(0, 8)}...\`\n\n다음 메시지부터 해당 완료 시점에서 이어집니다.`,
           ),
           color: 0x00ff00,
         },
@@ -486,6 +768,23 @@ export async function handleButtonInteraction(
         },
       ],
       components: [],
+    });
+    return;
+  }
+
+  if (action === "progress-queue-clear") {
+    const cleared = sessionManager.clearQueue(requestId);
+    await interaction.reply({
+      content: cleared > 0
+        ? L(
+          `🧹 Cleared ${cleared} queued message(s). Current task keeps running.`,
+          `🧹 대기 중이던 메시지 ${cleared}개를 정리했습니다. 현재 작업은 계속 진행됩니다.`,
+        )
+        : L(
+          "🧹 Queue is already empty. Current task keeps running.",
+          "🧹 이미 큐가 비어 있습니다. 현재 작업은 계속 진행됩니다.",
+        ),
+      ephemeral: true,
     });
     return;
   }
@@ -554,6 +853,286 @@ export async function handleButtonInteraction(
         },
       ],
       components: rows,
+    });
+    return;
+  }
+
+  if (action === "progress-back") {
+    await ensureEphemeralReply(interaction);
+    const checkpointId = extractCheckpointIdFromRequest(requestId);
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+
+    if (!checkpoint?.resumeSessionId) {
+      await sendEphemeralButtonMessage(interaction, {
+        content: L("No checkpoint available.", "복구할 체크포인트가 없습니다."),
+        components: [],
+      });
+      return;
+    }
+
+    updateCheckpointStatus(checkpoint.id, "applied");
+    const resumeSessionId = checkpoint.resumeSessionId;
+    resumeStoredSession(scopeId, projectChannelId, resumeSessionId, interaction);
+
+    await sendEphemeralButtonMessage(interaction, {
+      embeds: [
+        {
+          title: L("Returned to Saved Point", "저장된 시점으로 돌아감"),
+          description: L(
+            `Session: \`${resumeSessionId.slice(0, 8)}...\`\n\nNext message will continue from that saved point.`,
+            `세션: \`${resumeSessionId.slice(0, 8)}...\`\n\n다음 메시지부터 해당 저장 시점에서 이어집니다.`,
+          ),
+          color: 0x57f287,
+        },
+      ],
+      components: [],
+    });
+    return;
+  }
+
+  if (action === "progress-next-claude") {
+    await ensureEphemeralReply(interaction);
+    const checkpointId = extractCheckpointIdFromRequest(requestId);
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+    const project = getProject(projectChannelId);
+    if (!project) {
+      await sendEphemeralButtonMessage(interaction, {
+        content: L("Project not found.", "프로젝트를 찾을 수 없습니다."),
+        components: [],
+      });
+      return;
+    }
+
+    if (checkpoint) {
+      updateCheckpointStatus(checkpoint.id, "applied");
+    }
+    if (checkpoint?.resumeSessionId) {
+      resumeStoredSession(scopeId, projectChannelId, checkpoint.resumeSessionId, interaction);
+    }
+
+    const effectiveImprovements = deriveEffectiveImprovements(scopeId, checkpoint);
+    const checkpointForDisplay = checkpoint
+      ? { ...checkpoint, improvements: effectiveImprovements }
+      : null;
+    const response = createProgressStatusMessage(scopeId, "next", checkpointForDisplay as any);
+    await sendEphemeralButtonMessage(interaction, response);
+
+    const continuePrompt = effectiveImprovements.length > 0
+      ? L(
+        `Continue from the just-completed point. Apply these review improvements first, then keep moving autonomously:\n- ${effectiveImprovements.join("\n- ")}\n\nAlways end your response with [Reflection], [Improvement], [Next Step Suggestion].`,
+        `방금 완료된 지점부터 이어서 진행하세요. 먼저 아래 리뷰 개선점을 반영하고, 그다음 다음 단계까지 자율적으로 계속 진행하세요:\n- ${effectiveImprovements.join("\n- ")}\n\n응답 마지막에는 항상 [Reflection], [Improvement], [Next Step Suggestion]을 포함하세요.`,
+      )
+      : L(
+        "Continue from the just-completed point and take the next concrete implementation step autonomously. Report progress as you work. Always end your response with [Reflection], [Improvement], [Next Step Suggestion].",
+        "방금 완료된 지점부터 이어서, 다음 구체적인 구현 단계를 자율적으로 진행하세요. 진행 중에는 중간 과정을 계속 보고하세요. 응답 마지막에는 항상 [Reflection], [Improvement], [Next Step Suggestion]을 포함하세요.",
+      );
+
+    await sessionManager.sendMessage(interaction.channel as any, continuePrompt, {
+      scopeId,
+      projectChannelId,
+    });
+    return;
+  }
+
+  if (action === "progress-next-codex") {
+    await ensureEphemeralReply(interaction);
+    const checkpointId = extractCheckpointIdFromRequest(requestId);
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+    const project = getProject(projectChannelId);
+    if (!project) {
+      await sendEphemeralButtonMessage(interaction, {
+        content: L("Project not found.", "프로젝트를 찾을 수 없습니다."),
+        components: [],
+      });
+      return;
+    }
+    if (checkpoint) {
+      updateCheckpointStatus(checkpoint.id, "applied");
+    }
+    if (checkpoint?.resumeSessionId) {
+      resumeStoredSession(scopeId, projectChannelId, checkpoint.resumeSessionId, interaction);
+    }
+    const effectiveImprovements = deriveEffectiveImprovements(scopeId, checkpoint);
+    const autoPrompt = buildCodexAutoContinuePrompt({
+      description: checkpoint?.description,
+      improvements: effectiveImprovements,
+      model: DEFAULT_CODEX_MODEL,
+    });
+    await sendEphemeralButtonMessage(interaction, {
+      content: L(
+        `Codex auto-continue is starting.\nIt will inspect current Codex state first, choose status/result/resume/rescue automatically, and explicitly report the chosen path.\nDefault model: \`${DEFAULT_CODEX_MODEL}\``,
+        `Codex 자동 이어가기를 시작합니다.\n먼저 현재 Codex 상태를 점검한 뒤 status/result/resume/rescue 중 적절한 경로를 자동 선택하고, 어떤 경로를 골랐는지 먼저 명시적으로 보고합니다.\n기본 모델: \`${DEFAULT_CODEX_MODEL}\``,
+      ),
+      components: [],
+    });
+
+    await sessionManager.sendMessage(interaction.channel as any, autoPrompt, {
+      scopeId,
+      projectChannelId,
+    });
+    return;
+  }
+
+  if (action === "progress-codex-rescue" || action === "progress-codex-status" || action === "progress-codex-result" || action === "progress-codex-cancel") {
+    await ensureEphemeralReply(interaction);
+    const checkpointId = extractCheckpointIdFromRequest(requestId);
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+    const project = getProject(projectChannelId);
+    if (!project) {
+      await sendEphemeralButtonMessage(interaction, {
+        content: L("Project not found.", "프로젝트를 찾을 수 없습니다."),
+        components: [],
+      });
+      return;
+    }
+
+    if (checkpoint?.resumeSessionId) {
+      resumeStoredSession(scopeId, projectChannelId, checkpoint.resumeSessionId, interaction);
+    }
+
+    let command = "";
+    let notice = "";
+    if (action === "progress-codex-rescue") {
+      if (checkpoint) updateCheckpointStatus(checkpoint.id, "applied");
+      const effectiveImprovements = deriveEffectiveImprovements(scopeId, checkpoint);
+      command = buildCodexContinueCommand(effectiveImprovements);
+      notice = L(
+        `Delegating continuation to Codex.\n\`${command}\``,
+        `이어지는 작업을 Codex에게 위임합니다.\n\`${command}\``,
+      );
+    } else if (action === "progress-codex-status") {
+      command = buildCodexStatusCommand();
+      notice = L(
+        `Checking Codex background task status.\n\`${command}\``,
+        `Codex 백그라운드 작업 상태를 확인합니다.\n\`${command}\``,
+      );
+    } else if (action === "progress-codex-result") {
+      command = buildCodexResultCommand();
+      notice = L(
+        `Fetching the latest Codex result.\n\`${command}\`\nUse the returned session id with \`codex resume <id>\` when you want direct Codex resume.`,
+        `최신 Codex 결과를 가져옵니다.\n\`${command}\`\n직접 Codex 재개가 필요하면 반환된 session id로 \`codex resume <id>\`를 사용하세요.`,
+      );
+    } else {
+      command = buildCodexCancelCommand();
+      notice = L(
+        `Cancelling the active Codex task.\n\`${command}\``,
+        `현재 Codex 작업을 취소합니다.\n\`${command}\``,
+      );
+    }
+
+    await sendEphemeralButtonMessage(interaction, {
+      content: notice,
+      components: [],
+    });
+
+    await sessionManager.sendMessage(interaction.channel as any, command, {
+      scopeId,
+      projectChannelId,
+    });
+    return;
+  }
+
+  if (action === "progress-review") {
+    await ensureEphemeralReply(interaction);
+    const checkpointId = extractCheckpointIdFromRequest(requestId);
+    const scopeId = interaction.channelId;
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+    await sendEphemeralButtonMessage(interaction, {
+      content: L(
+        `Choose the Codex review mode.\n• Normal review runs \`/codex:review --background --model ${DEFAULT_CODEX_MODEL}\`\n• Adversarial review auto-builds \`--base main\`, applies \`--model ${DEFAULT_CODEX_MODEL}\`, and uses challenge focus from the latest checkpoint`,
+        `Codex 리뷰 모드를 선택하세요.\n• 일반 리뷰는 \`/codex:review --background --model ${DEFAULT_CODEX_MODEL}\`로 실행합니다\n• Adversarial 리뷰는 최근 체크포인트(회고/개선점/다음 단계) 기반으로 \`--base main\`과 \`--model ${DEFAULT_CODEX_MODEL}\`을 자동 적용합니다`,
+      ),
+      components: [createReviewModeControls(checkpoint?.id ?? checkpointId ?? "_")],
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (action === "progress-review-normal") {
+    await ensureEphemeralReply(interaction);
+    const checkpointId = extractCheckpointIdFromRequest(requestId);
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+    const project = getProject(projectChannelId);
+    if (!project) {
+      await sendEphemeralButtonMessage(interaction, {
+        content: L("Project not found.", "프로젝트를 찾을 수 없습니다."),
+        components: [],
+      });
+      return;
+    }
+
+    if (checkpoint) {
+      updateCheckpointStatus(checkpoint.id, "reviewed");
+      addImprovements(checkpoint.id, [buildCodexReviewCommand("normal")]);
+    }
+    if (checkpoint?.resumeSessionId) {
+      resumeStoredSession(scopeId, projectChannelId, checkpoint.resumeSessionId, interaction);
+    }
+    const command = buildCodexReviewCommand("normal");
+
+    await sendEphemeralButtonMessage(interaction, {
+      content: L(
+        `Starting Codex review in background.\n\`${command}\``,
+        `Codex 일반 리뷰를 백그라운드로 시작합니다.\n\`${command}\``,
+      ),
+      components: [],
+    });
+
+    await sessionManager.sendMessage(interaction.channel as any, command, {
+      scopeId,
+      projectChannelId,
+    });
+    return;
+  }
+
+  if (action === "progress-review-adversarial") {
+    await ensureEphemeralReply(interaction);
+    const checkpointId = extractCheckpointIdFromRequest(requestId);
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction);
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+    const project = getProject(projectChannelId);
+    if (!project) {
+      await sendEphemeralButtonMessage(interaction, {
+        content: L("Project not found.", "프로젝트를 찾을 수 없습니다."),
+        components: [],
+      });
+      return;
+    }
+    if (checkpoint) {
+      updateCheckpointStatus(checkpoint.id, "reviewed");
+    }
+    if (checkpoint?.resumeSessionId) {
+      resumeStoredSession(scopeId, projectChannelId, checkpoint.resumeSessionId, interaction);
+    }
+
+    const effectiveImprovements = deriveEffectiveImprovements(scopeId, checkpoint);
+    const autoFocus = buildAutoReviewFocus(
+      checkpoint ? { ...checkpoint, improvements: effectiveImprovements } : { improvements: effectiveImprovements },
+    );
+    const command = buildCodexReviewCommand("adversarial", "main", autoFocus);
+
+    await sendEphemeralButtonMessage(interaction, {
+      content: L(
+        `Starting Codex adversarial review in background (auto-filled from latest checkpoint).\n\`${command}\``,
+        `최근 체크포인트 기준으로 자동 채운 Codex adversarial 리뷰를 백그라운드로 시작합니다.\n\`${command}\``,
+      ),
+      components: [],
+    });
+
+    await sessionManager.sendMessage(interaction.channel as any, command, {
+      scopeId,
+      projectChannelId,
     });
     return;
   }
@@ -820,6 +1399,7 @@ export async function handleSelectMenuInteraction(
 export async function handleModalSubmitInteraction(
   interaction: ModalSubmitInteraction,
 ): Promise<void> {
+  console.log(`[handleModalSubmitInteraction] customId=${interaction.customId}`);
   if (!isAllowedUser(interaction.user.id)) {
     await interaction.reply({
       content: L("You are not authorized.", "권한이 없습니다."),
@@ -882,4 +1462,47 @@ export async function handleModalSubmitInteraction(
     });
     return;
   }
+
+  if (interaction.customId.startsWith("progress-review-adversarial-modal:")) {
+    const checkpointId = extractCheckpointIdFromRequest(
+      interaction.customId.slice("progress-review-adversarial-modal:".length),
+    );
+    const scopeId = interaction.channelId;
+    const projectChannelId = getProjectChannelIdFromInteraction(interaction as unknown as ButtonInteraction);
+    const checkpoint = checkpointId && checkpointId !== "_" ? getCheckpoint(checkpointId) : getLastCheckpoint(scopeId);
+    const project = getProject(projectChannelId);
+    if (!project) {
+      await interaction.reply({
+        content: L("Project not found.", "프로젝트를 찾을 수 없습니다."),
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (checkpoint) {
+      updateCheckpointStatus(checkpoint.id, "reviewed");
+    }
+
+    const base = interaction.fields.getTextInputValue("base");
+    const focus = interaction.fields.getTextInputValue("focus");
+    const command = buildCodexReviewCommand("adversarial", base, focus);
+    if (checkpoint?.resumeSessionId) {
+      resumeStoredSession(scopeId, projectChannelId, checkpoint.resumeSessionId, interaction);
+    }
+
+    await interaction.reply({
+      content: L(
+        `Starting Codex adversarial review in background.\n\`${command}\``,
+        `Codex adversarial 리뷰를 백그라운드로 시작합니다.\n\`${command}\``,
+      ),
+      ephemeral: true,
+    });
+
+    await sessionManager.sendMessage(interaction.channel as any, command, {
+      scopeId,
+      projectChannelId,
+    });
+    return;
+  }
+
 }

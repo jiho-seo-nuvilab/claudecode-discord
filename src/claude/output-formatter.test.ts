@@ -12,6 +12,8 @@ import {
   createResultEmbed,
   createAskUserQuestionEmbed,
   createStopButton,
+  createCompletionControls,
+  createProgressControls,
   createCompletedButton,
   type AskQuestionData,
 } from "./output-formatter.js";
@@ -294,9 +296,30 @@ describe("createStopButton", () => {
   });
 });
 
+describe("createProgressControls", () => {
+  it("creates stop and queue clear buttons", () => {
+    const row = createProgressControls("scope-1", 3);
+    expect(row.components[0].data).toHaveProperty("custom_id", "stop:scope-1");
+    expect(row.components[1].data).toHaveProperty("custom_id", "progress-queue-clear:scope-1");
+    expect(row.components[1].data).toHaveProperty("disabled", false);
+  });
+
+  it("disables queue clear button when queue is empty", () => {
+    const row = createProgressControls("scope-2", 0);
+    expect(row.components[1].data).toHaveProperty("disabled", true);
+  });
+});
+
 describe("createCompletedButton", () => {
   it("creates disabled button", () => {
     const row = createCompletedButton();
     expect(row.components[0].data).toHaveProperty("disabled", true);
+  });
+});
+
+describe("createCompletionControls", () => {
+  it("creates a resume button for completed session", () => {
+    const row = createCompletionControls("cp-123");
+    expect(row.components[0].data).toHaveProperty("custom_id", "checkpoint-resume:cp-123");
   });
 });

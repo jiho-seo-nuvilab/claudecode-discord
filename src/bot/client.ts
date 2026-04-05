@@ -101,10 +101,12 @@ export async function startBot(): Promise<Client> {
           await command.execute(interaction);
         }
       } else if (interaction.isButton()) {
+        console.log(`[button] ${interaction.customId} from ${interaction.user.id} in ${interaction.channelId}`);
         await handleButtonInteraction(interaction);
       } else if (interaction.isStringSelectMenu()) {
         await handleSelectMenuInteraction(interaction);
       } else if (interaction.isModalSubmit()) {
+        console.log(`[modal] ${interaction.customId} from ${interaction.user.id} in ${interaction.channelId}`);
         await handleModalSubmitInteraction(interaction);
       }
     } catch (error) {

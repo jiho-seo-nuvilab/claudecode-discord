@@ -73,6 +73,29 @@ export function createStopButton(
   );
 }
 
+export function createProgressControls(
+  channelId: string,
+  queuedCount: number,
+): ActionRowBuilder<ButtonBuilder> {
+  const queueLabel = queuedCount > 0
+    ? L(`Clear Queue (${queuedCount})`, `큐 정리 (${queuedCount})`)
+    : L("Clear Queue", "큐 정리");
+
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`stop:${channelId}`)
+      .setLabel(L("Stop", "중지"))
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("⏹️"),
+    new ButtonBuilder()
+      .setCustomId(`progress-queue-clear:${channelId}`)
+      .setLabel(queueLabel)
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🧹")
+      .setDisabled(queuedCount === 0),
+  );
+}
+
 export function createCompletedButton(): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -81,6 +104,18 @@ export function createCompletedButton(): ActionRowBuilder<ButtonBuilder> {
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("✅")
       .setDisabled(true),
+  );
+}
+
+export function createCompletionControls(
+  checkpointId: string,
+): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`checkpoint-resume:${checkpointId}`)
+      .setLabel(L("Rollback", "롤백"))
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("↩️"),
   );
 }
 
@@ -257,12 +292,17 @@ export function createResultEmbed(
   usageSummary?: string | null,
   contextSummary?: string | null,
   statusLine?: string | null,
+  processSummary?: string[] | null,
 ): EmbedBuilder {
   const duration = `${(durationMs / 1000).toFixed(1)}s`;
 
   let description = result.slice(0, 4000);
   if (statusLine) {
     description = `${description}\n\n\`${statusLine}\``;
+  }
+  if (processSummary && processSummary.length > 0) {
+    const block = processSummary.map((line) => `- ${line}`).join("\n");
+    description = `${description}\n\n${L("Recent Process", "최근 진행 과정")}:\n${block}`;
   }
 
   const detailLines: string[] = [];
