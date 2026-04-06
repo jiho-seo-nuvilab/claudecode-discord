@@ -1,0 +1,4 @@
+- Code style: ESM TypeScript, concise helper functions, localized user-facing strings via `L(en, kr)`, Vitest for regression tests.
+- Session/progress UX changes usually live in `src/claude/session-manager.ts`, `src/claude/progress-buttons.ts`, and Discord handlers under `src/bot/handlers`.
+- After changes: run focused Vitest tests, then `npm run -s build`, and restart the macOS launch agent if Discord runtime must pick up changes.
+- Prefer minimal patches that preserve existing Discord UX patterns and include explicit progress/status messaging for long-running actions.

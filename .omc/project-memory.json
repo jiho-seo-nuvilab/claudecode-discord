@@ -1,0 +1,133 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775301698922,
+  "projectRoot": "/Users/jiho/git/claudecode-discord",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=20.0.0",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "vitest",
+        "version": "2.0.0",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": "Node.js 20.0.0"
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "npm test",
+    "lintCommand": null,
+    "devCommand": "npm run dev",
+    "scripts": {
+      "dev": "tsx src/index.ts",
+      "build": "tsup src/index.ts --format esm --dts",
+      "start": "node dist/index.js",
+      "test": "vitest run",
+      "test:watch": "vitest"
+    }
+  },
+  "conventions": {
+    "namingStyle": "camelCase",
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "src"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 2,
+      "lastAccessed": 1775301698901,
+      "keyFiles": [
+        "index.d.ts",
+        "index.js"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 27,
+      "lastAccessed": 1775301698902,
+      "keyFiles": [
+        "README.kr.md",
+        "SETUP-WINDOWS.kr.md",
+        "SETUP-WINDOWS.md",
+        "SETUP.kr.md",
+        "TESTING.kr.md"
+      ]
+    },
+    "menubar": {
+      "path": "menubar",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775301698906,
+      "keyFiles": [
+        "ClaudeBotMenu",
+        "ClaudeBotMenu.swift"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 1,
+      "lastAccessed": 1775301698907,
+      "keyFiles": [
+        "index.ts"
+      ]
+    },
+    "tray": {
+      "path": "tray",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775301698912,
+      "keyFiles": [
+        "ClaudeBotTray.cs",
+        "claude_tray.py"
+      ]
+    },
+    "src/utils": {
+      "path": "src/utils",
+      "purpose": "Utility functions",
+      "fileCount": 7,
+      "lastAccessed": 1775301698916,
+      "keyFiles": [
+        "config.test.ts",
+        "config.ts",
+        "i18n.test.ts"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}

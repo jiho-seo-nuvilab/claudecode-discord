@@ -983,10 +983,16 @@ class SessionManager {
           const resultAuthKeywords = ["credit balance", "not authenticated", "unauthorized", "authentication", "login required", "auth token", "expired", "not logged in", "please run /login"];
           const lowerResult = resultText.toLowerCase();
           if (resultAuthKeywords.some((kw) => lowerResult.includes(kw))) {
+            const restartDelaySeconds = 10;
             await sendToChannel(L(
-              "🔑 Claude Code is not logged in. Please open a terminal on the host PC and run `claude login` to authenticate, then try again.",
-              "🔑 Claude Code 로그인이 필요합니다. 호스트 PC에서 터미널을 열고 `claude login`을 실행하여 인증 후 다시 시도해 주세요.",
+              `🔑 Claude Code token expired. The bot will automatically restart in ${restartDelaySeconds} seconds to refresh the token.`,
+              `🔑 Claude Code 토큰이 만료되었습니다. 봇이 ${restartDelaySeconds}초 뒤 자동으로 재시작되어 새 토큰을 로드합니다.`,
             ));
+            // Auto-restart to refresh token
+            setTimeout(() => {
+              console.log(`[auth-token-restart] Restarting bot process to refresh Claude Code token...`);
+              process.exit(1); // systemd/PM2/Task Scheduler will auto-restart
+            }, restartDelaySeconds * 1000);
           }
 
           this.setStoredStatus(scopeId, projectChannelId, "idle");
@@ -1026,10 +1032,16 @@ class SessionManager {
       const authKeywords = ["credit balance", "not authenticated", "unauthorized", "authentication", "login required", "auth token", "expired", "not logged in", "please run /login"];
       const lowerMsg = rawMsg.toLowerCase();
       if (authKeywords.some((kw) => lowerMsg.includes(kw))) {
+        const restartDelaySeconds = 10;
         errMsg += L(
-          "\n\n🔑 Claude Code is not logged in. Please open a terminal on the host PC and run `claude login` to authenticate, then try again.",
-          "\n\n🔑 Claude Code 로그인이 필요합니다. 호스트 PC에서 터미널을 열고 `claude login`을 실행하여 인증 후 다시 시도해 주세요.",
+          `\n\n🔑 Claude Code token expired. The bot will automatically restart in ${restartDelaySeconds} seconds to refresh the token.`,
+          `\n\n🔑 Claude Code 토큰이 만료되었습니다. 봇이 ${restartDelaySeconds}초 뒤 자동으로 재시작되어 새 토큰을 로드합니다.`,
         );
+        // Auto-restart to refresh token
+        setTimeout(() => {
+          console.log(`[auth-token-restart] Restarting bot process to refresh Claude Code token...`);
+          process.exit(1); // systemd/PM2/Task Scheduler will auto-restart
+        }, restartDelaySeconds * 1000);
       }
 
       await sendToChannel(`❌ ${errMsg}`);

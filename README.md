@@ -259,6 +259,82 @@ win-start.bat --stop   &:: Stop
 
 Desktop shortcut, control panel GUI, **Claude Code usage dashboard**, settings dialog, auto-update, auto-start on logon (Registry). → **[Full guide](docs/SETUP-WINDOWS.md)**
 
+## Troubleshooting
+
+### "Claude Code token expired" Error (401 Authentication Error)
+
+**Problem:** The bot shows `401 authentication_error` or "Claude Code token expired" — usually happens once a day.
+
+**Root Cause:** Claude Code's OAuth token is valid for **24 hours only**. If your bot runs continuously beyond that, the token expires and Claude API calls fail.
+
+**Solution: Enable Auto-Restart**
+
+The bot includes scripts to automatically restart itself daily at a set time, refreshing the token without manual intervention.
+
+#### macOS / Linux
+```bash
+bash scripts/setup-bot-autorestart.sh
+```
+
+Follow the prompts:
+- **Bot directory:** Auto-detected (press Enter)
+- **Restart time:** Enter time in HH:MM format (default: `02:00` — 2 AM)
+
+This registers your bot with:
+- **macOS:** `launchd` agent (automatic launch-on-startup)
+- **Linux:** `crontab` entry (runs via system scheduler)
+
+#### Windows
+```batch
+scripts\setup-bot-autorestart.bat
+```
+
+This registers your bot with **Windows Task Scheduler** to restart at the specified time daily.
+
+#### Verification
+
+Check that the auto-restart is configured:
+
+```bash
+# macOS
+launchctl list | grep claude-bot
+
+# Linux
+crontab -l | grep discord-bot
+
+# Windows
+schtasks /query /tn "Claude-Discord-Bot-AutoRestart"
+```
+
+#### What Happens
+
+1. **Bot restarts** at the scheduled time (e.g., 2 AM) — takes ~1-2 seconds
+2. **New token is loaded** from `~/.claude/auth.json` (Claude Code's auth file)
+3. **Session state is preserved** — all Discord sessions resume from where they left off
+4. **You continue work uninterrupted** — no manual action needed
+
+#### Disable Auto-Restart (if needed)
+
+```bash
+# macOS
+launchctl unload ~/Library/LaunchAgents/com.claude.discord-bot.restart.plist
+
+# Linux
+crontab -e
+# Find and delete the line with "discord-bot" or "claudecode-discord"
+
+# Windows
+schtasks /delete /tn "Claude-Discord-Bot-AutoRestart" /f
+```
+
+#### View Auto-Restart Logs
+
+```bash
+tail -f ~/.claude/bot-restart.log
+```
+
+---
+
 ## Development
 
 ```bash

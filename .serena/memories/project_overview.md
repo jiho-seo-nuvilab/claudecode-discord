@@ -1,0 +1,5 @@
+- Project: claudecode-discord (`claude-code-discord-controller`)
+- Purpose: Control multiple Claude Code sessions from Discord, including mobile-friendly progress, queueing, checkpoints, Codex delegation, and session continuity.
+- Tech stack: TypeScript, Node.js >=20, Discord.js, Anthropic Claude Agent SDK, better-sqlite3, Vitest, tsup.
+- Layout: `src/claude` for session orchestration and progress UX, `src/bot` for Discord commands/handlers, `src/utils` for prompt/codex helpers, `src/db` for persistence, `dist` build output.
+- Important runtime behavior: Discord flow wraps Claude Agent SDK `query()` and can resume Claude sessions by saved `session_id`.

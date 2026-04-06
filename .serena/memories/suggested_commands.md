@@ -1,0 +1,9 @@
+- Install deps: `npm install`
+- Dev: `npm run dev`
+- Build: `npm run -s build`
+- Test all: `npm test`
+- Test focused files: `npm test -- <paths>`
+- Start built app: `npm start`
+- Restart launch agent on macOS: `launchctl kickstart -k gui/$(id -u)/com.claude-discord`
+- Inspect running process: `pgrep -fl 'node dist/index.js|claude-discord'`
+- Search built output for a feature: `rg -n '<pattern>' dist/index.js`
