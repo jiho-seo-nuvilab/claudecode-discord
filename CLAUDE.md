@@ -43,7 +43,11 @@ install.bat          # Windows 자동 설치
                         [SQLite (better-sqlite3)]
 ```
 
-**핵심 데이터 흐름:** 등록된 채널에 메시지 전송 → `message.ts` 핸들러에서 인증/레이트리밋 검증 → 커스텀 입력 대기 중이면 AskUserQuestion 답변으로 처리 → 동시 세션 체크 (활성 시 거부) → 파일 첨부 다운로드 (이미지 + 문서) → `SessionManager.sendMessage()`가 Agent SDK `query()` 생성/재개 → 스트리밍 응답을 1.5초 간격으로 Discord 메시지 edit → 텍스트 출력 전에는 15초마다 heartbeat로 진행 상황 표시 (도구명, 경과시간, 도구 사용 횟수) → 진행 중 메시지에 Stop 버튼으로 즉시 중지 가능 → tool use 발생 시 `canUseTool` 콜백이 AskUserQuestion이면 질문 UI 전송, 읽기 전용이면 자동 승인, 아니면 Discord 버튼 embed 전송 → 사용자 승인/거절 → promise resolve → 결과 embed(비용/소요시간) 전송.
+**핵심 데이터 흐름:** 등록된 채널에 메시지 전송 → `message.ts` 핸들러에서 인증/레이트리밋 검증 → 커스텀 입력 대기 중이면 AskUserQuestion 답변으로 처리 → 동시 세션 체크 (활성 시 거부) → 파일 첨부 다운로드 (이미지 + 문서) → `SessionManager.sendMessage()`가 Agent SDK `query()` 생성/재개 → **실시간 진행 상황 표시**:
+  1. **Tool 입력 미리보기** (500ms 실시간): Bash/Edit/Write/Glob/Grep 도구 사용 시 마크다운 형식으로 즉시 Discord에 표시
+  2. **진행 상황 메시지** (500ms 간격): 세션 모드, 요청 내용, 현재 상태, 도구 사용 횟수, 최근 10개 단계, 진행 시간 표시
+  3. **텍스트 응답 스트리밍** (1.5초 간격): Assistant text를 계속 업데이트
+→ Tool use 발생 시 `canUseTool` 콜백이 AskUserQuestion이면 질문 UI 전송, 읽기 전용이면 자동 승인, auto_approve 활성화면 입력 미리보기 후 자동 승인, 아니면 Discord 버튼 embed 전송 → 사용자 승인/거절 → promise resolve → 최종 완료 embed(비용/소요시간/최근 과정) 전송 → Stop 버튼으로 진행 중 즉시 중지 가능.
 
 ### 파일 구조
 
@@ -99,6 +103,26 @@ claudecode-discord/
 - **`src/security/guard.ts`** — 유저 화이트리스트(ALLOWED_USER_IDS), 인메모리 슬라이딩 윈도우 레이트리밋, 경로 순회(`..`) 차단
 - **`src/utils/config.ts`** — Zod v4 스키마로 환경변수 검증, 싱글톤 패턴
 
+### Tool 입력 미리보기 (실시간 표시)
+
+`auto_approve`가 활성화된 채널에서, Claude가 도구를 사용할 때 입력 정보를 즉시 Discord에 마크다운 형식으로 표시합니다. 사용자가 도구 실행 과정을 거의 실시간으로 볼 수 있습니다.
+
+| Tool | 표시 형식 | 예시 |
+|------|---------|------|
+| **Bash** | 마크다운 코드블록 | `` ⬦ `bash Run` ```bash\ngit status\n``` `` |
+| **Edit** | 파일명 + diff 미리보기 | `` ⬦ `Edit: main.ts` ```diff\n- old\n+ new\n``` `` |
+| **Write** | 파일명 + 내용 미리보기 | `` ⬦ `Write: config.json` ```json\n{...}\n``` `` |
+| **Glob** | 검색 패턴 | `` ⬦ `Glob` ```\nsrc/**/*.ts\n``` `` |
+| **Grep** | 검색 패턴 | `` ⬦ `Grep` ```\nfunction\s+\w+\n``` `` |
+
+**활성화 조건:**
+- 채널이 `/cc-register`로 등록됨
+- 프로젝트의 `auto_approve` 플래그가 활성화됨
+- Claude가 해당 도구를 사용함
+
+**비활성화 조건:**
+- 사용자 승인이 필요한 경우 (auto_approve 비활성화) → 기존 Discord embed로 승인/거부 UI 표시
+
 ### Tool 승인 로직 (`canUseTool`)
 
 1. AskUserQuestion → Discord 질문 UI(버튼/셀렉트메뉴) 전송, 사용자 답변 수집 후 `updatedInput.answers`에 주입하여 allow 반환 (5분 타임아웃, 미응답 시 거부)
@@ -138,3 +162,57 @@ PC별로 별도 Discord 봇을 생성하여 같은 길드에 초대. 각 봇은 
 ## 환경 설정
 
 `.env.example`을 `.env`로 복사 후 값 설정. 필수: `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, `ALLOWED_USER_IDS`, `BASE_PROJECT_DIR`. 선택: `RATE_LIMIT_PER_MINUTE` (기본값 10), `SHOW_COST` (기본값 true, Max plan 사용자는 false 권장). data.db는 첫 실행 시 자동 생성.
+
+## Claude Code CLI 스타일 워크플로우
+
+이 프로젝트의 Claude Code 세션은 **CLI 도구처럼 자연스럽고 연속적**이어야 한다. 각 응답은 아래 흐름을 따른다:
+
+### 필수 Phase 마커
+
+모든 다단계 작업에서:
+```
+→ [INTENT_ANALYSIS] <의도 분류>
+  ├ [intent type]: <classification>
+  ├ [reason]: <분석>
+  └ [approach]: <전략>
+  
+→ [TOOL_SELECTION] <도구 선택>
+  ├ [primary]: <주도구>
+  ├ [dependencies]: <순서>
+  └ ⏳ pending: <기다릴 작업>
+
+→ [EXECUTION] <작업 실행>
+  ├ ◀ [bd show] (필요시)
+  ├ ◀ [Serena find_symbol] (필요시)
+  ├ ◀ [gsd plan-phase] (필요시)
+  └ ◀ [실제 작업 (도구명)]
+
+→ [CHECKPOINT] <상태 갱신>
+  ├ [current_status]: <상황>
+  ├ [verified]: <검증된 사실>
+  └ [blockers]: <남은 문제>
+```
+
+### 응답 필수 구성
+
+1. **Phase 진입 표시**: `→ [PHASE_NAME]`로 모든 단계 전환 명시
+2. **도구 호출 추적**: `◀ [도구명]` 형태로 각 도구 실행 표시
+3. **대기 작업 명시**: `⏳ [작업명]` 형태로 pending 상태 표시
+4. **상태 스냅샷**: 중요 체크포인트마다 현재 상태 갱신
+5. **의무 끝부분**:
+   - `[Reflection]` — 현재 단계 회고
+   - `[Improvement]` — 개선 방향 2가지
+   - `[Next Step Suggestion]` — 다음 행동과 우선순위
+
+### Checkpoint 체크리스트
+
+각 응답이 다음을 포함해야 함:
+- ✅ 의도 명시 (분류)
+- ✅ 도구 선택 사유
+- ✅ 작업 순서 (dependencies)
+- ✅ 현재 진행률 (checkpoint)
+- ✅ 대기 중인 것 (pending)
+- ✅ 다음 step 예고
+- ✅ [Reflection], [Improvement], [Next Step Suggestion]
+
+이 패턴이 없으면 CLI 흐름이 끊긴다.
