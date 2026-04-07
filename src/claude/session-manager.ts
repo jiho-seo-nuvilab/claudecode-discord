@@ -617,6 +617,28 @@ class SessionManager {
                 const bashMsg = `⬦ \`bash Run\`\n\`\`\`bash\n${command}\n\`\`\``;
                 await sendToChannel(bashMsg).catch(() => {});
               }
+              // Edit/Write 도구: 파일 경로와 변경사항 미리보기 전송
+              if ((toolName === "Edit" || toolName === "Write") && typeof input.file_path === "string") {
+                const filePath = input.file_path as string;
+                const fileName = filePath.split(/[\\/]/).pop() || filePath;
+                let editMsg = `⬦ \`${toolName}: ${fileName}\``;
+
+                if (toolName === "Edit" && input.old_string && input.new_string) {
+                  const oldPreview = String(input.old_string).slice(0, 80);
+                  const newPreview = String(input.new_string).slice(0, 80);
+                  editMsg += `\n\`\`\`diff\n- ${oldPreview}\n+ ${newPreview}\n\`\`\``;
+                } else if (toolName === "Write" && input.content) {
+                  const contentPreview = String(input.content).slice(0, 100);
+                  editMsg += `\n\`\`\`\n${contentPreview}\n\`\`\``;
+                }
+                await sendToChannel(editMsg).catch(() => {});
+              }
+              // Glob/Grep 도구: 검색 패턴 미리보기 전송
+              if ((toolName === "Glob" || toolName === "Grep") && typeof input.pattern === "string") {
+                const pattern = input.pattern as string;
+                const searchMsg = `⬦ \`${toolName}\`\n\`\`\`\n${pattern}\n\`\`\``;
+                await sendToChannel(searchMsg).catch(() => {});
+              }
               return { behavior: "allow" as const, updatedInput: input };
             }
 
