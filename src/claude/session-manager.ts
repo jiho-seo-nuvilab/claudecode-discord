@@ -26,6 +26,7 @@ import {
 import { createProgressButtons } from "./progress-buttons.js";
 import { addImprovements, createCheckpoint } from "./checkpoints.js";
 import { getUsageSummaryLine } from "../bot/commands/usage.js";
+import { isOperationalCheckpointNoise, pickCheckpointConclusion } from "../utils/checkpoint-review.js";
 import { buildDefaultOpsHint, buildGlobalOpsPrompt, buildLocaleResponseHint, buildSkillIntro } from "../utils/skills.js";
 import { extractCodexAutoDecision } from "../utils/codex.js";
 
@@ -37,6 +38,7 @@ function extractCheckpointInsights(resultText: string): string[] {
   const push = (value: string): void => {
     const cleaned = value.replace(/^[-*•]\s*/, "").trim();
     if (!cleaned) return;
+    if (isOperationalCheckpointNoise(cleaned)) return;
     const key = cleaned.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
@@ -107,6 +109,7 @@ class SessionManager {
   private forceFreshNext = new Set<string>();
   private forceUltraFastNext = new Set<string>();
   private scopeTokenWatermark = new Map<string, number>();
+  private pendingManualCodex = new Map<string, { model: string; context: string }>();
 
   private setStoredStatus(scopeId: string, projectChannelId: string, status: SessionStatus): void {
     if (scopeId === projectChannelId) {
@@ -201,7 +204,7 @@ class SessionManager {
     const MAX_EDIT_INTERVAL = 1200;
     let editInterval = MIN_EDIT_INTERVAL;
     let editSuccessStreak = 0;
-    const PROGRESS_EDIT_INTERVAL = 900;
+    const PROGRESS_EDIT_INTERVAL = 500; // Faster update: 900ms → 500ms (진행 상황 더 자주 표시)
     let lastProgressEditTime = 0;
     let streamEventCount = 0;
     let progressTick = 0;
@@ -235,7 +238,7 @@ class SessionManager {
     const pushActivityLog = (entry: string): void => {
       if (!entry.trim()) return;
       activityLog.push(entry);
-      if (activityLog.length > 12) activityLog.shift();
+      if (activityLog.length > 20) activityLog.shift(); // Increased from 12 to 20 (더 많은 단계 표시)
     };
 
     const isGenericFileEditEntry = (entry: string): boolean => (
@@ -338,7 +341,7 @@ class SessionManager {
         filtered.push(item);
       }
 
-      return filtered.slice(-6);
+      return filtered.slice(-10); // Increased from 6 to 10 (더 많은 최근 단계 표시)
     };
 
     const describeToolStep = (toolName: string, input: Record<string, unknown>): string => {
@@ -608,6 +611,12 @@ class SessionManager {
 
             const currentProject = getProject(projectChannelId);
             if (currentProject?.auto_approve) {
+              // Bash 도구: 명령어를 즉시 Discord에 미리보기 메시지로 전송
+              if (toolName === "Bash" && typeof input.command === "string") {
+                const command = input.command as string;
+                const bashMsg = `⬦ \`bash Run\`\n\`\`\`bash\n${command}\n\`\`\``;
+                await sendToChannel(bashMsg).catch(() => {});
+              }
               return { behavior: "allow" as const, updatedInput: input };
             }
 
@@ -861,11 +870,7 @@ class SessionManager {
           }
 
           const resultText = resultMsg.result ?? L("Task completed", "작업 완료");
-          const conclusion = resultText
-            .split("\n")
-            .map((line) => line.trim())
-            .find((line) => line.length > 0)
-            ?.slice(0, 180) ?? L("Task completed", "작업 완료");
+          const conclusion = pickCheckpointConclusion(resultText, L("Task completed", "작업 완료"));
           const usageSummary = await getUsageSummaryLine();
           const activeInputSummary = maxInputTokens > 0
             ? `~${Math.max(1, Math.min(100, Math.round((maxInputTokens / 200_000) * 100)))}% (${maxInputTokens.toLocaleString()} tok)`
@@ -1154,6 +1159,20 @@ class SessionManager {
 
   hasPendingCustomInput(scopeId: string): boolean {
     return pendingCustomInputs.has(scopeId);
+  }
+
+  setPendingManualCodex(scopeId: string, model: string, context: string): void {
+    this.pendingManualCodex.set(scopeId, { model, context });
+  }
+
+  consumePendingManualCodex(scopeId: string): { model: string; context: string } | null {
+    const value = this.pendingManualCodex.get(scopeId) ?? null;
+    if (value) this.pendingManualCodex.delete(scopeId);
+    return value;
+  }
+
+  hasPendingManualCodex(scopeId: string): boolean {
+    return this.pendingManualCodex.has(scopeId);
   }
 
   setPendingQueue(scopeId: string, channel: TextChannel, prompt: string, sourceMessageId?: string): void {

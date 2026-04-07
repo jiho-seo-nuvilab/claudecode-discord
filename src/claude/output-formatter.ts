@@ -284,6 +284,44 @@ export function createAskUserQuestionEmbed(
   return { embed, components };
 }
 
+/**
+ * Bash tool 실행 명령어를 Discord 메시지 포맷으로 변환
+ * 마크다운 코드블록 형식으로 표시
+ */
+export function formatBashToolMessage(
+  command: string,
+  description?: string,
+): string {
+  let msg = `${"⬦"} \`bash Run\`\n\`\`\`bash\n${command}\n\`\`\``;
+  if (description) {
+    msg += `\n_${description}_`;
+  }
+  return msg;
+}
+
+/**
+ * Tool execution step을 마크다운 형식으로 표시
+ */
+export function formatToolStepMessage(
+  toolName: string,
+  input: Record<string, unknown>,
+): string {
+  let msg = `${"⬦"} \`${toolName}\``;
+
+  if (toolName === "Bash" && typeof input.command === "string") {
+    const cmd = input.command;
+    const short = cmd.length > 100 ? `${cmd.slice(0, 100)}...` : cmd;
+    msg = `${"⬦"} \`bash Run\`\n\`\`\`bash\n${short}\n\`\`\``;
+  } else if (toolName === "Edit" || toolName === "Write") {
+    const filePath = typeof input.file_path === "string" ? input.file_path : "file";
+    msg = `${"⬦"} \`${toolName}: ${filePath}\``;
+  } else if ((toolName === "Glob" || toolName === "Grep") && typeof input.pattern === "string") {
+    msg = `${"⬦"} \`${toolName}: ${input.pattern}\``;
+  }
+
+  return msg;
+}
+
 export function createResultEmbed(
   result: string,
   _costUsd: number,
